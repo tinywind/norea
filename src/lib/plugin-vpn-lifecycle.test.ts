@@ -26,7 +26,12 @@ import {
   type PluginVpnStatusEvent,
 } from "./plugin-vpn";
 import { listSavedPluginVpnProfiles, type SavedVpnProfile } from "./plugin-vpn-profiles";
-import { requestPluginVpnRecovery, startPluginVpnLifecycle } from "./plugin-vpn-lifecycle";
+import {
+  getPluginVpnRecoverySnapshot,
+  requestPluginVpnRecovery,
+  startPluginVpnLifecycle,
+  subscribePluginVpnRecovery,
+} from "./plugin-vpn-lifecycle";
 import { useNetworkStore } from "./network";
 import { usePluginVpnStore } from "../store/plugin-vpn";
 
@@ -368,5 +373,38 @@ describe("plugin VPN app lifecycle", () => {
     window.dispatchEvent(new Event("norea-app-resumed"));
     expect(onRestored).not.toHaveBeenCalled();
     expect(restoreMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("tracks the latest recovery failure across retries and clears it when connected or disabled", async () => {
+    vi.useFakeTimers();
+    const timeout = new Error("OpenVPN connection failed (CONNECTION_TIMEOUT)");
+    restoreMock.mockRejectedValueOnce(timeout).mockResolvedValueOnce(CONNECTED_STATUS);
+    const changes = vi.fn();
+    const unsubscribe = subscribePluginVpnRecovery(changes);
+    try {
+      expect(getPluginVpnRecoverySnapshot()).toEqual({ failedAttempts: 0, lastError: null });
+      stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError: vi.fn() });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getPluginVpnRecoverySnapshot()).toEqual({
+        failedAttempts: 1,
+        lastError: "OpenVPN connection failed (CONNECTION_TIMEOUT)",
+      });
+      expect(changes).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(getPluginVpnRecoverySnapshot()).toEqual({ failedAttempts: 0, lastError: null });
+
+      emitStatus?.({ kind: "error", status: ERROR_STATUS });
+      expect(getPluginVpnRecoverySnapshot()).toEqual({
+        failedAttempts: 1,
+        lastError: "OpenVPN connection failed (CONNECTION_TIMEOUT)",
+      });
+
+      usePluginVpnStore.getState().setEnabled(false);
+      expect(getPluginVpnRecoverySnapshot()).toEqual({ failedAttempts: 0, lastError: null });
+    } finally {
+      unsubscribe();
+    }
   });
 });

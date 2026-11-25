@@ -12,9 +12,14 @@ import {
 const mocks = vi.hoisted(() => ({
   cancel: vi.fn(),
   listing: {} as Record<string, unknown>,
+  listingEnabled: undefined as boolean | undefined,
   navigate: vi.fn(),
   open: { error: null, isPending: false, mutate: vi.fn() } as Record<string, unknown>,
   plugins: [] as unknown[],
+  recovery: { failedAttempts: 0, lastError: null as string | null },
+  recoveryStopped: false,
+  requestRecovery: vi.fn(),
+  vpnStatus: { data: undefined, error: null, refetch: vi.fn() } as Record<string, unknown>,
 }));
 
 vi.mock("../components/PdfReaderContent", () => ({ PdfReaderContent: () => null }));
@@ -24,13 +29,24 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 vi.mock("@tanstack/react-query", () => ({
   useMutation: () => mocks.open,
-  useQuery: ({ queryKey }: { queryKey: unknown[] }) =>
-    queryKey[1] === "installed"
-      ? { data: mocks.plugins, isLoading: false }
-      : queryKey[0] === "novel"
-        ? { data: [] }
-        : mocks.listing,
+  useQuery: ({ enabled, queryKey }: { enabled?: boolean; queryKey: unknown[] }) => {
+    if (queryKey[1] === "installed") return { data: mocks.plugins, isLoading: false };
+    if (queryKey[0] === "novel") return { data: [] };
+    if (queryKey[0] === "plugin-vpn") return mocks.vpnStatus;
+    mocks.listingEnabled = enabled;
+    return mocks.listing;
+  },
   useQueryClient: () => ({ cancelQueries: vi.fn(), invalidateQueries: vi.fn() }),
+}));
+vi.mock("../lib/plugin-vpn", async (original) => ({
+  ...(await original<typeof import("../lib/plugin-vpn")>()),
+  isPluginVpnRecoveryStopped: () => mocks.recoveryStopped,
+}));
+vi.mock("../lib/plugin-vpn-lifecycle", async (original) => ({
+  ...(await original<typeof import("../lib/plugin-vpn-lifecycle")>()),
+  getPluginVpnRecoverySnapshot: () => mocks.recovery,
+  requestPluginVpnRecovery: () => mocks.requestRecovery(),
+  subscribePluginVpnRecovery: () => () => undefined,
 }));
 vi.mock("../i18n", async (original) => ({
   ...(await original<typeof import("../i18n")>()),
@@ -41,11 +57,14 @@ vi.mock("../lib/tasks/scheduler", async (original) => ({
   taskScheduler: { cancel: mocks.cancel },
 }));
 
-const { canLoadSourceListing, SourcePage } = await import("./source");
+const { canLoadSourceListing, resolveSourcePluginVpnNotice, SourcePage } = await import("./source");
 const { BlockingLoadingOverlay, PageHeader, StateView } = await import("../components/AppFrame");
 const { CoverGridSkeleton } = await import("../components/browse/CoverGridSkeleton");
 const { PluginFilters } = await import("../components/PluginFilters");
 const { ResponsiveSheet } = await import("../components/ui/ResponsiveSheet");
+const { useNetworkStore } = await import("../lib/network");
+const { PluginVpnUnavailableError } = await import("../lib/plugin-vpn-traffic");
+const { usePluginVpnStore } = await import("../store/plugin-vpn");
 
 const genreFilters: Filters = {
   genre: {
@@ -70,9 +89,15 @@ let harness: BackNavigationHarness | undefined;
 let tree: ReactNode;
 
 beforeEach(() => {
+  usePluginVpnStore.getState().setEnabled(false);
+  useNetworkStore.setState({ connectivity: "online", revision: 1 });
   mocks.plugins = [plugin(genreFilters)];
   mocks.listing = { data: undefined, error: null, isFetching: true, refetch: vi.fn() };
+  mocks.listingEnabled = undefined;
   mocks.open = { error: null, isPending: false, mutate: vi.fn() };
+  mocks.recovery = { failedAttempts: 0, lastError: null };
+  mocks.recoveryStopped = false;
+  mocks.vpnStatus = { data: undefined, error: null, refetch: vi.fn() };
 });
 
 afterEach(async () => {
@@ -230,6 +255,162 @@ describe("SourcePage", () => {
     expect(chip).toBeDefined();
     await harness!.run(() => (chip!.props.onClick as () => void)());
     expect(collectElements(tree).find((element) => element.props.children === "Genre: Fantasy")).toBeUndefined();
+  });
+
+  it("shows the VPN failure status and Open network settings immediately instead of waiting on a skeleton when plugin VPN is reconnecting after a failure", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    mocks.recovery = {
+      failedAttempts: 2,
+      lastError: "OpenVPN connection failed (CONNECTION_TIMEOUT)",
+    };
+    mocks.vpnStatus = {
+      data: {
+        error: null,
+        phase: "connecting",
+        profile: {
+          hash: "a".repeat(64),
+          isVpnGateFinder: true,
+          remoteHost: "175.213.14.118",
+          requiresUsernamePassword: true,
+        },
+        proxyPort: 35785,
+        supported: true,
+      },
+      error: null,
+      refetch: vi.fn(),
+    };
+
+    const elements = await mountPage();
+    expect(mocks.listingEnabled).toBe(false);
+    expect(byType(elements, CoverGridSkeleton)).toHaveLength(0);
+
+    const state = byType(elements, StateView)[0]!;
+    const props = state.props as {
+      action: { label: string; onClick: () => void };
+      color: string;
+      details: { content: string; label: string };
+      message: string;
+      secondaryAction: { label: string; onClick: () => void };
+      title: string;
+    };
+    expect(props.color).toBe("danger");
+    expect(props.title).toBe("source.vpnUnavailableTitle");
+    expect(props.message).toBe("source.vpnRetryingServerMessage");
+    expect(props.details.content).toBe("OpenVPN connection failed (CONNECTION_TIMEOUT)");
+    expect(props.action.label).toBe("settings.data.pluginVpn.toast.openNetworkSettings");
+    expect(props.secondaryAction.label).toBe("common.retry");
+
+    props.action.onClick();
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/settings",
+      search: { section: "network" },
+    });
+
+    props.secondaryAction.onClick();
+    expect(mocks.requestRecovery).toHaveBeenCalledOnce();
+    expect(mocks.vpnStatus.refetch).toHaveBeenCalledOnce();
+  });
+
+  it("loads the source listing normally once plugin VPN is connected", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    mocks.vpnStatus = {
+      data: {
+        error: null,
+        phase: "connected",
+        profile: {
+          hash: "a".repeat(64),
+          isVpnGateFinder: true,
+          remoteHost: "175.213.14.118",
+          requiresUsernamePassword: true,
+        },
+        proxyPort: 35785,
+        supported: true,
+      },
+      error: null,
+      refetch: vi.fn(),
+    };
+
+    const elements = await mountPage();
+    expect(mocks.listingEnabled).toBe(true);
+    expect(byType(elements, StateView)).toHaveLength(0);
+    expect(byType(elements, CoverGridSkeleton)).toHaveLength(1);
+  });
+
+  it("offers Open network settings instead of Open site when a listing fails with PluginVpnUnavailableError", async () => {
+    mocks.listing = {
+      data: undefined,
+      error: new PluginVpnUnavailableError(),
+      isFetching: false,
+      refetch: vi.fn(),
+    };
+
+    const state = byType(await mountPage(), StateView)[0]!;
+    const props = state.props as {
+      action: { label: string; onClick: () => void };
+      secondaryAction: { label: string; onClick: () => void };
+      title: string;
+    };
+    expect(props.title).toBe("source.vpnUnavailableTitle");
+    expect(props.action.label).toBe("settings.data.pluginVpn.toast.openNetworkSettings");
+    expect(props.secondaryAction.label).toBe("common.retry");
+
+    props.action.onClick();
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/settings",
+      search: { section: "network" },
+    });
+    props.secondaryAction.onClick();
+    expect(mocks.listing.refetch).toHaveBeenCalledOnce();
+  });
+
+  it("resolves warning and exhausted VPN notices cleanly", () => {
+    const t = (key: string) => key;
+    const baseProfile = {
+      hash: "a".repeat(64),
+      isVpnGateFinder: true,
+      remoteHost: "211.49.100.28",
+      requiresUsernamePassword: true,
+    };
+
+    expect(
+      resolveSourcePluginVpnNotice(
+        {
+          online: true,
+          recovery: { failedAttempts: 0, lastError: null },
+          recoveryStopped: false,
+          status: { error: null, phase: "connecting", profile: baseProfile, proxyPort: 35785, supported: true },
+          statusError: null,
+          vpnEnabled: true,
+        },
+        t,
+      ),
+    ).toEqual({
+      color: "warn",
+      details: null,
+      message: "source.vpnConnectingServerMessage",
+      retryable: true,
+      title: "source.vpnConnectingTitle",
+    });
+
+    expect(
+      resolveSourcePluginVpnNotice(
+        {
+          online: true,
+          recovery: { failedAttempts: 3, lastError: "OpenVPN connection failed (CONNECTION_TIMEOUT)" },
+          recoveryStopped: true,
+          status: { error: null, phase: "disabled", profile: null, proxyPort: 35785, supported: true },
+          statusError: null,
+          vpnEnabled: true,
+        },
+        t,
+      ),
+    ).toEqual({
+      color: "danger",
+      details: "OpenVPN connection failed (CONNECTION_TIMEOUT)",
+      message: "settings.data.pluginVpn.toast.recoveryStoppedBody",
+      retryable: false,
+      title: "source.vpnUnavailableTitle",
+    });
   });
 });
 

@@ -13,6 +13,7 @@ import {
 } from "./plugin-vpn";
 import { listSavedPluginVpnProfiles, type SavedVpnProfile } from "./plugin-vpn-profiles";
 import { isAppActive, subscribeAppLifecycle } from "./app-lifecycle";
+import { describeError } from "./errors";
 import { isNetworkOnline, useNetworkStore } from "./network";
 import { isAndroidRuntime } from "./tauri-runtime";
 import { usePluginVpnStore } from "../store/plugin-vpn";
@@ -28,6 +29,41 @@ type FailureOutcome = "retry" | "switched" | "stopped" | "superseded";
 function byRecoveryPreference(left: SavedVpnProfile, right: SavedVpnProfile): number {
   return pluginVpnProfileSucceededAt(right.hash) - pluginVpnProfileSucceededAt(left.hash) ||
     right.approvalSequence - left.approvalSequence;
+}
+
+export interface PluginVpnRecoverySnapshot {
+  failedAttempts: number;
+  lastError: string | null;
+}
+
+const EMPTY_RECOVERY_SNAPSHOT: PluginVpnRecoverySnapshot = {
+  failedAttempts: 0,
+  lastError: null,
+};
+
+let recoverySnapshot: PluginVpnRecoverySnapshot = EMPTY_RECOVERY_SNAPSHOT;
+const recoveryStateListeners = new Set<() => void>();
+
+function publishRecoverySnapshot(next: PluginVpnRecoverySnapshot): void {
+  if (
+    recoverySnapshot.failedAttempts === next.failedAttempts &&
+    recoverySnapshot.lastError === next.lastError
+  ) {
+    return;
+  }
+  recoverySnapshot = next;
+  for (const listener of [...recoveryStateListeners]) listener();
+}
+
+export function getPluginVpnRecoverySnapshot(): PluginVpnRecoverySnapshot {
+  return recoverySnapshot;
+}
+
+export function subscribePluginVpnRecovery(listener: () => void): () => void {
+  recoveryStateListeners.add(listener);
+  return () => {
+    recoveryStateListeners.delete(listener);
+  };
 }
 
 const recoveryRequests = new Set<() => void>();
@@ -70,6 +106,7 @@ export function startPluginVpnLifecycle({
     failingProfile = null;
     profileFailures = 0;
     failedProfileKeys = new Set();
+    publishRecoverySnapshot(EMPTY_RECOVERY_SNAPSHOT);
   };
   const scheduleRetry = () => {
     if (!active || !isNetworkOnline()) return;
@@ -147,6 +184,10 @@ export function startPluginVpnLifecycle({
         }
         failedAttempts += 1;
         retryFailures += 1;
+        publishRecoverySnapshot({
+          failedAttempts,
+          lastError: describeError(error),
+        });
         if (failedAttempts === 1) onError(error);
         if (!isRetryablePluginVpnError(error)) {
           restoring = false;
@@ -204,11 +245,21 @@ export function startPluginVpnLifecycle({
     window.addEventListener("norea-app-resumed", restore);
   }
   void startPluginVpnStatusListener((event) => {
-    if (event.kind === "networkChanged" && isNetworkOnline()) {
+    if (event.kind === "reconnected" && event.status.phase === "connected") {
+      resetEpisode();
+    } else if (event.kind === "networkChanged" && isNetworkOnline()) {
       if (restoring) recoveryPending = true;
       else requestRecovery();
-    } else if (event.kind === "error" && isRetryablePluginVpnError(event.status.error)) {
-      requestRecovery();
+    } else if (event.kind === "error") {
+      if (event.status.error) {
+        publishRecoverySnapshot({
+          failedAttempts: Math.max(recoverySnapshot.failedAttempts, 1),
+          lastError: event.status.error,
+        });
+      }
+      if (isRetryablePluginVpnError(event.status.error)) {
+        requestRecovery();
+      }
     }
   }).then(
     (unlisten) => {
@@ -235,5 +286,6 @@ export function startPluginVpnLifecycle({
       window.removeEventListener("norea-app-resumed", restore);
     }
     recoveryRequests.delete(requestRecovery);
+    publishRecoverySnapshot(EMPTY_RECOVERY_SNAPSHOT);
   };
 }

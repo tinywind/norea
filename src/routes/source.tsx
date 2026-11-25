@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
@@ -66,7 +73,22 @@ import {
   type TaskHandle,
 } from "../lib/tasks/scheduler";
 import { isAbortError } from "../lib/abort";
-import { useTranslation } from "../i18n";
+import { useNetworkStore } from "../lib/network";
+import {
+  getPluginVpnStatus,
+  isPluginVpnRecoveryStopped,
+  PLUGIN_VPN_QUERY_KEY,
+  type PluginVpnStatus,
+} from "../lib/plugin-vpn";
+import {
+  getPluginVpnRecoverySnapshot,
+  requestPluginVpnRecovery,
+  subscribePluginVpnRecovery,
+  type PluginVpnRecoverySnapshot,
+} from "../lib/plugin-vpn-lifecycle";
+import { isPluginVpnUnavailableError } from "../lib/plugin-vpn-traffic";
+import { usePluginVpnStore } from "../store/plugin-vpn";
+import { useTranslation, type TranslationKey } from "../i18n";
 import "../styles/browse.css";
 
 /** More text fields than this open the filter form full screen on phones. */
@@ -81,6 +103,101 @@ interface ListingPage {
 interface AccumulatedNovel {
   item: NovelItem;
   key: string;
+}
+
+const VPN_STATUS_POLL_MS = 2_000;
+
+export interface SourcePluginVpnNotice {
+  color: "danger" | "warn";
+  details: string | null;
+  message: string;
+  retryable: boolean;
+  title: string;
+}
+
+type SourceTranslate = (
+  key: TranslationKey,
+  params?: Record<string, number | string>,
+) => string;
+
+export function resolveSourcePluginVpnNotice(
+  input: {
+    online: boolean;
+    recovery: PluginVpnRecoverySnapshot;
+    recoveryStopped: boolean;
+    status: PluginVpnStatus | undefined;
+    statusError: unknown;
+    vpnEnabled: boolean;
+  },
+  t: SourceTranslate,
+): SourcePluginVpnNotice | null {
+  const { online, recovery, recoveryStopped, status, statusError, vpnEnabled } = input;
+  if (!vpnEnabled) return null;
+  if (status === undefined && !statusError) return null;
+  if (status?.supported && status.phase === "connected") return null;
+
+  const details = statusError
+    ? describeError(statusError)
+    : status?.error ?? recovery.lastError;
+  const server = status?.profile?.remoteHost ?? null;
+
+  if (!online || status?.phase === "waitingForNetwork") {
+    return {
+      color: "warn",
+      details,
+      message: t("source.vpnWaitingForNetworkMessage"),
+      retryable: false,
+      title: t("source.vpnWaitingForNetworkTitle"),
+    };
+  }
+
+  const isConnecting =
+    status?.supported === true &&
+    status.profile !== null &&
+    !recoveryStopped &&
+    !statusError &&
+    (status.phase === "connecting" || status.phase === "reconnecting");
+
+  if (isConnecting) {
+    if (details) {
+      return {
+        color: "danger",
+        details,
+        message: server
+          ? t("source.vpnRetryingServerMessage", { server })
+          : t("source.vpnFailedMessage"),
+        retryable: true,
+        title: t("source.vpnUnavailableTitle"),
+      };
+    }
+    return {
+      color: "warn",
+      details: null,
+      message: server
+        ? t("source.vpnConnectingServerMessage", { server })
+        : t("source.vpnConnectingMessage"),
+      retryable: true,
+      title: t("source.vpnConnectingTitle"),
+    };
+  }
+
+  const missingOrExhaustedProfile =
+    recoveryStopped || (status !== undefined && status.supported && !status.profile);
+
+  return {
+    color: "danger",
+    details,
+    message: missingOrExhaustedProfile
+      ? t("settings.data.pluginVpn.toast.recoveryStoppedBody")
+      : server
+        ? t("source.vpnFailedWithServerMessage", { server })
+        : t("source.vpnFailedMessage"),
+    retryable:
+      !recoveryStopped &&
+      status?.supported !== false &&
+      status?.profile !== null,
+    title: t("source.vpnUnavailableTitle"),
+  };
 }
 
 export function canLoadSourceListing(
@@ -239,6 +356,40 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
       pluginManager.getPlugin(pluginId),
     [installed.data, pluginId],
   );
+  const vpnEnabled = usePluginVpnStore((state) => state.enabled);
+  const online = useNetworkStore((state) => state.connectivity === "online");
+  const vpnRecovery = useSyncExternalStore(
+    subscribePluginVpnRecovery,
+    getPluginVpnRecoverySnapshot,
+    getPluginVpnRecoverySnapshot,
+  );
+  const vpnStatusQuery = useQuery({
+    meta: { errorPresentation: "inline" },
+    enabled: vpnEnabled,
+    queryKey: PLUGIN_VPN_QUERY_KEY,
+    queryFn: getPluginVpnStatus,
+    refetchInterval: (query) => {
+      if (!vpnEnabled) return false;
+      const data = query.state.data as PluginVpnStatus | undefined;
+      return data?.supported && data.phase === "connected"
+        ? false
+        : VPN_STATUS_POLL_MS;
+    },
+  });
+  const vpnStatus = vpnEnabled ? vpnStatusQuery.data : undefined;
+  const vpnBlockingListing =
+    vpnEnabled && !(vpnStatus?.supported && vpnStatus.phase === "connected");
+  const vpnNotice = resolveSourcePluginVpnNotice(
+    {
+      online,
+      recovery: vpnRecovery,
+      recoveryStopped: isPluginVpnRecoveryStopped(),
+      status: vpnStatus,
+      statusError: vpnEnabled ? vpnStatusQuery.error : null,
+      vpnEnabled,
+    },
+    t,
+  );
 
   const [page, setPage] = useState(1);
   const [loadedPages, setLoadedPages] = useState<ListingPage[]>([]);
@@ -294,7 +445,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
 
   const listing = useQuery({
     meta: { errorPresentation: "inline" },
-    enabled: canLoadSourceListing(plugin, filterOwner, pluginId, true),
+    enabled: canLoadSourceListing(plugin, filterOwner, pluginId, !vpnBlockingListing),
     // Source failures (blocked sites, parser errors) are not transient, and
     // the default three retries only delay the visible error by ~7 seconds.
     retry: false,
@@ -375,6 +526,15 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     if (!plugin) return;
     openPluginSite(plugin, t("tasks.task.openSite", { source: plugin.name }));
   }, [plugin, t]);
+
+  const openNetworkSettings = useCallback((): void => {
+    void navigate({ to: "/settings", search: { section: "network" } });
+  }, [navigate]);
+
+  const retryPluginVpn = useCallback((): void => {
+    requestPluginVpnRecovery();
+    void vpnStatusQuery.refetch();
+  }, [vpnStatusQuery]);
 
   useEffect(() => {
     const data = listing.data;
@@ -545,7 +705,29 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     currentPage?.page === 1 &&
     currentPage.items.length === 0;
   const firstPageLoading =
-    accumulatedNovels.length === 0 && !listing.error && !noResults;
+    accumulatedNovels.length === 0 && !vpnNotice && !listing.error && !noResults;
+  const listingErrorIsVpn = isPluginVpnUnavailableError(listing.error);
+  const renderVpnStateView = (notice: SourcePluginVpnNotice) => (
+    <StateView
+      action={{
+        label: t("settings.data.pluginVpn.toast.openNetworkSettings"),
+        onClick: openNetworkSettings,
+      }}
+      color={notice.color}
+      details={
+        notice.details
+          ? { content: notice.details, label: t("common.details") }
+          : undefined
+      }
+      message={notice.message}
+      secondaryAction={
+        notice.retryable
+          ? { label: t("common.retry"), onClick: retryPluginVpn }
+          : undefined
+      }
+      title={notice.title}
+    />
+  );
 
   const applyFilters = (filters: ResolvedFilterValues) => {
     closeSearch();
@@ -686,7 +868,10 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
 
       <PageFrame className="norea-source-frame" size="wide">
         <SourceAccessNotice active sourceId={plugin.id} sourceName={plugin.name} />
-        {firstPageLoading ? (
+        {vpnNotice && accumulatedNovels.length > 0 ? renderVpnStateView(vpnNotice) : null}
+        {vpnNotice && accumulatedNovels.length === 0 ? (
+          renderVpnStateView(vpnNotice)
+        ) : firstPageLoading ? (
           <CoverGridSkeleton
             label={
               isKeywordMode
@@ -695,13 +880,27 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
             }
           />
         ) : listing.error && accumulatedNovels.length === 0 ? (
-          <StateView
-            action={{ label: t("common.retry"), onClick: () => void listing.refetch() }}
-            color="danger"
-            details={{ content: describeError(listing.error), label: t("common.details") }}
-            secondaryAction={{ label: t("common.openSite"), onClick: openSite }}
-            title={t("source.error")}
-          />
+          listingErrorIsVpn ? (
+            <StateView
+              action={{
+                label: t("settings.data.pluginVpn.toast.openNetworkSettings"),
+                onClick: openNetworkSettings,
+              }}
+              color="danger"
+              details={{ content: describeError(listing.error), label: t("common.details") }}
+              message={t("source.vpnFailedMessage")}
+              secondaryAction={{ label: t("common.retry"), onClick: () => void listing.refetch() }}
+              title={t("source.vpnUnavailableTitle")}
+            />
+          ) : (
+            <StateView
+              action={{ label: t("common.retry"), onClick: () => void listing.refetch() }}
+              color="danger"
+              details={{ content: describeError(listing.error), label: t("common.details") }}
+              secondaryAction={{ label: t("common.openSite"), onClick: openSite }}
+              title={t("source.error")}
+            />
+          )
         ) : noResults ? (
           <StateView title={t("source.noResults")} />
         ) : (
@@ -724,21 +923,35 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
             </div>
             <NearEndSentinel
               className="norea-source-near-end"
-              enabled={hasNextPage && !listing.error}
+              enabled={hasNextPage && !listing.error && !vpnBlockingListing}
               onNearEnd={loadNextPage}
             />
-            {listing.error ? (
-              <StateView
-                action={{ label: t("common.retry"), onClick: () => void listing.refetch() }}
-                color="danger"
-                details={{ content: describeError(listing.error), label: t("common.details") }}
-                secondaryAction={{ label: t("common.openSite"), onClick: openSite }}
-                title={t("source.error")}
-              />
+            {listing.error && !(vpnNotice && listingErrorIsVpn) ? (
+              listingErrorIsVpn ? (
+                <StateView
+                  action={{
+                    label: t("settings.data.pluginVpn.toast.openNetworkSettings"),
+                    onClick: openNetworkSettings,
+                  }}
+                  color="danger"
+                  details={{ content: describeError(listing.error), label: t("common.details") }}
+                  message={t("source.vpnFailedMessage")}
+                  secondaryAction={{ label: t("common.retry"), onClick: () => void listing.refetch() }}
+                  title={t("source.vpnUnavailableTitle")}
+                />
+              ) : (
+                <StateView
+                  action={{ label: t("common.retry"), onClick: () => void listing.refetch() }}
+                  color="danger"
+                  details={{ content: describeError(listing.error), label: t("common.details") }}
+                  secondaryAction={{ label: t("common.openSite"), onClick: openSite }}
+                  title={t("source.error")}
+                />
+              )
             ) : showLoadMoreButton ? (
               <Button
                 className="norea-source-load-more"
-                disabled={!hasNextPage}
+                disabled={!hasNextPage || vpnBlockingListing}
                 loading={listing.isFetching && page > 1}
                 onClick={loadNextPage}
                 variant="default"
