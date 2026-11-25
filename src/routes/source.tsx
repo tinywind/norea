@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -25,6 +26,7 @@ import { ChipButton } from "../components/ChipButton";
 import { CoverGridSkeleton } from "../components/browse/CoverGridSkeleton";
 import { PluginSettingsDialog } from "../components/browse/PluginSettingsDialog";
 import { QuickAddCard } from "../components/browse/QuickAddCard";
+import { SourceDisplaySheet } from "../components/browse/SourceDisplaySheet";
 import { useQuickAddToLibrary } from "../components/browse/use-quick-add";
 import {
   hasPluginInputs,
@@ -42,10 +44,12 @@ import { SourceNovelCover } from "../components/SourceNovelCover";
 import {
   CloseIcon,
   FilterIcon,
+  InLibraryIcon,
   ReaderSettingsIcon,
   SearchIcon,
   SettingsIcon,
   SourceIcon,
+  ViewOptionsIcon,
 } from "../components/ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
@@ -67,6 +71,7 @@ import {
   trimAppNavigationHistoryTo,
 } from "../lib/navigation-history";
 import { useLibraryNovelMembership } from "../lib/use-library-novel-membership";
+import { useUserWorkCategories } from "../lib/use-user-work-categories";
 import { enqueueSourceTask } from "../lib/tasks/source-tasks";
 import {
   taskScheduler,
@@ -87,6 +92,8 @@ import {
   type PluginVpnRecoverySnapshot,
 } from "../lib/plugin-vpn-lifecycle";
 import { isPluginVpnUnavailableError } from "../lib/plugin-vpn-traffic";
+import { useBrowseStore } from "../store/browse";
+import type { LibraryDisplayMode } from "../store/library";
 import { usePluginVpnStore } from "../store/plugin-vpn";
 import { useTranslation, type TranslationKey } from "../i18n";
 import "../styles/browse.css";
@@ -292,7 +299,9 @@ function countTextFilters(schema: Filters): number {
 }
 
 interface SourceNovelButtonProps {
+  categories: readonly string[];
   disabled: boolean;
+  displayMode: LibraryDisplayMode;
   inLibrary: boolean;
   item: NovelItem;
   onAdd: (item: NovelItem) => void;
@@ -302,7 +311,9 @@ interface SourceNovelButtonProps {
 }
 
 function SourceNovelButton({
+  categories,
   disabled,
+  displayMode,
   inLibrary,
   item,
   onAdd,
@@ -310,9 +321,64 @@ function SourceNovelButton({
   pending,
   plugin,
 }: SourceNovelButtonProps) {
+  const { t } = useTranslation();
+  const categoryText = categories.join(", ");
+
+  if (displayMode === "list") {
+    return (
+      <QuickAddCard
+        className="norea-list-item norea-source-list-row norea-state-layer"
+        disabled={disabled}
+        inLibrary={inLibrary}
+        name={item.name}
+        onAdd={() => onAdd(item)}
+        onOpen={() => onOpen(item)}
+        pending={pending}
+      >
+        <span aria-hidden="true" className="norea-list-item-leading">
+          <span className="norea-source-row-cover">
+            <SourceNovelCover
+              height={60}
+              inLibrary={false}
+              item={item}
+              plugin={plugin}
+              width={40}
+            />
+          </span>
+        </span>
+        <span className="norea-list-item-text">
+          <span className="norea-list-item-title" title={item.name}>
+            {item.name}
+          </span>
+          {categoryText ? (
+            <span
+              aria-label={`${t("categories.title")}: ${categoryText}`}
+              className="norea-list-item-subtitle norea-source-row-categories"
+              title={categoryText}
+            >
+              {categoryText}
+            </span>
+          ) : null}
+        </span>
+        {inLibrary ? (
+          <span className="norea-list-item-trailing">
+            <span
+              aria-label={t("novel.inLibrary")}
+              className="norea-source-row-library-mark"
+              role="img"
+              title={t("novel.inLibrary")}
+            >
+              <InLibraryIcon size="1.125rem" />
+            </span>
+          </span>
+        ) : null}
+      </QuickAddCard>
+    );
+  }
+
   return (
     <QuickAddCard
-      className="norea-source-card norea-state-layer"
+      className="norea-source-catalog-card norea-state-layer"
       disabled={disabled}
       inLibrary={inLibrary}
       name={item.name}
@@ -320,16 +386,47 @@ function SourceNovelButton({
       onOpen={() => onOpen(item)}
       pending={pending}
     >
-      <SourceNovelCover
-        height={152}
-        inLibrary={inLibrary}
-        item={item}
-        plugin={plugin}
-        width={104}
-      />
-      <span className="norea-source-card-title" title={item.name}>
-        {item.name}
+      <span className="norea-source-catalog-card-cover">
+        <SourceNovelCover
+          height="auto"
+          inLibrary={inLibrary}
+          item={item}
+          plugin={plugin}
+          width="100%"
+        />
+        {displayMode === "compact" ? (
+          <span className="norea-source-catalog-card-overlay">
+            <span className="norea-source-catalog-card-title" title={item.name}>
+              {item.name}
+            </span>
+            {categoryText ? (
+              <span
+                aria-label={`${t("categories.title")}: ${categoryText}`}
+                className="norea-source-catalog-card-categories"
+                title={categoryText}
+              >
+                {categoryText}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
       </span>
+      {displayMode === "comfortable" ? (
+        <span className="norea-source-catalog-card-text">
+          <span className="norea-source-catalog-card-title" title={item.name}>
+            {item.name}
+          </span>
+          {categoryText ? (
+            <span
+              aria-label={`${t("categories.title")}: ${categoryText}`}
+              className="norea-source-catalog-card-categories"
+              title={categoryText}
+            >
+              {categoryText}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
     </QuickAddCard>
   );
 }
@@ -348,6 +445,8 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
   const queryClient = useQueryClient();
   const isInLibrary = useLibraryNovelMembership();
   const quickAdd = useQuickAddToLibrary();
+  const displayMode = useBrowseStore((state) => state.sourceDisplayMode);
+  const novelsPerRow = useBrowseStore((state) => state.sourceNovelsPerRow);
 
   const installed = useInstalledPlugins(true);
   const plugin = useMemo(
@@ -398,6 +497,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
   const [submittedSearch, setSubmittedSearch] = useState(query);
 
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  const [displaySheetOpen, setDisplaySheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
   const openTaskRef = useRef<TaskHandle<number> | null>(null);
@@ -574,6 +674,17 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
       ),
     [visiblePages],
   );
+  const workCategoryTargets = useMemo(
+    () =>
+      plugin
+        ? accumulatedNovels.map(({ item }) => ({
+            pluginId: plugin.id,
+            novelPath: item.path,
+          }))
+        : [],
+    [accumulatedNovels, plugin],
+  );
+  const categoriesOf = useUserWorkCategories(workCategoryTargets, Boolean(plugin));
 
   const open = useMutation({
     meta: { errorPresentation: "inline" },
@@ -655,7 +766,11 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
       <>
         <PageHeader onBack={goBack} />
         <PageFrame size="wide">
-          <CoverGridSkeleton label={t("common.loading")} />
+          <CoverGridSkeleton
+            displayMode={displayMode}
+            label={t("common.loading")}
+            novelsPerRow={novelsPerRow}
+          />
         </PageFrame>
       </>
     );
@@ -799,6 +914,13 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
                 ) : null}
               </>
             )}
+            <IconButton
+              label={t("library.viewOptions.display")}
+              onClick={() => setDisplaySheetOpen(true)}
+              size="lg"
+            >
+              <ViewOptionsIcon />
+            </IconButton>
             <IconButton label={t("common.openSite")} onClick={openSite} size="lg">
               <SourceIcon />
             </IconButton>
@@ -873,11 +995,13 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
           renderVpnStateView(vpnNotice)
         ) : firstPageLoading ? (
           <CoverGridSkeleton
+            displayMode={displayMode}
             label={
               isKeywordMode
                 ? t("source.searching", { name: plugin.name, query: trimmedSearch })
                 : t("source.loadingMode", { mode: popularModeLabel })
             }
+            novelsPerRow={novelsPerRow}
           />
         ) : listing.error && accumulatedNovels.length === 0 ? (
           listingErrorIsVpn ? (
@@ -905,19 +1029,35 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
           <StateView title={t("source.noResults")} />
         ) : (
           <>
-            <div className="norea-source-grid">
+            <div
+              className={
+                displayMode === "list"
+                  ? "norea-source-catalog-list"
+                  : "norea-source-catalog-grid"
+              }
+              data-mode={displayMode}
+              style={
+                displayMode === "list"
+                  ? undefined
+                  : ({
+                      "--norea-source-grid-columns": novelsPerRow,
+                    } as CSSProperties)
+              }
+            >
               {accumulatedNovels.map(({ item, key }) => (
                 <SourceNovelButton
-                  key={key}
-                  item={item}
+                  categories={categoriesOf(plugin.id, item.path)}
                   disabled={open.isPending}
+                  displayMode={displayMode}
                   inLibrary={isInLibrary(plugin.id, item.path)}
-                  pending={quickAdd.isPending({ kind: "source", item, plugin })}
-                  plugin={plugin}
+                  item={item}
+                  key={key}
                   onAdd={(novel) => quickAdd.add({ kind: "source", item: novel, plugin })}
                   onOpen={(novel) => {
                     if (!open.isPending) open.mutate(novel);
                   }}
+                  pending={quickAdd.isPending({ kind: "source", item, plugin })}
+                  plugin={plugin}
                 />
               ))}
             </div>
@@ -1009,6 +1149,10 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
           />
         </ResponsiveSheet>
       ) : null}
+      <SourceDisplaySheet
+        onClose={() => setDisplaySheetOpen(false)}
+        opened={displaySheetOpen}
+      />
       <PluginSettingsDialog
         onClose={() => setSettingsOpen(false)}
         onSaved={() => void listing.refetch()}

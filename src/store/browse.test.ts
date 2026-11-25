@@ -1,12 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import {
-  DEFAULT_SOURCE_REQUEST_TIMEOUT_SECONDS,
-  getSourceRequestTimeoutMs,
-  getSourceRequestTimeoutSeconds,
-  useBrowseStore,
-} from "./browse";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-function installMemoryStorage(): void {
+const storageHarness = vi.hoisted(() => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   const values = new Map<string, string>();
   const storage = {
     get length() {
@@ -32,11 +28,42 @@ function installMemoryStorage(): void {
     configurable: true,
     value: storage,
   });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { localStorage: storage },
+  });
+  return { descriptor, values, windowDescriptor };
+});
+
+import {
+  DEFAULT_SOURCE_DISPLAY_MODE,
+  DEFAULT_SOURCE_NOVELS_PER_ROW,
+  DEFAULT_SOURCE_REQUEST_TIMEOUT_SECONDS,
+  getSourceRequestTimeoutMs,
+  getSourceRequestTimeoutSeconds,
+  useBrowseStore,
+} from "./browse";
+
+function resetMemoryStorage(): void {
+  storageHarness.values.clear();
 }
+
+afterAll(() => {
+  if (storageHarness.descriptor) {
+    Object.defineProperty(globalThis, "localStorage", storageHarness.descriptor);
+  } else {
+    delete (globalThis as { localStorage?: Storage }).localStorage;
+  }
+  if (storageHarness.windowDescriptor) {
+    Object.defineProperty(globalThis, "window", storageHarness.windowDescriptor);
+  } else {
+    delete (globalThis as { window?: Window }).window;
+  }
+});
 
 describe("browse store source request timeout", () => {
   beforeEach(() => {
-    installMemoryStorage();
+    resetMemoryStorage();
     useBrowseStore.setState({
       sourceRequestTimeoutSeconds: DEFAULT_SOURCE_REQUEST_TIMEOUT_SECONDS,
     });
@@ -74,5 +101,52 @@ describe("browse store automatic extension updates", () => {
     useBrowseStore.getState().setAutoUpdateExtensions(true);
     expect(useBrowseStore.getState().autoUpdateExtensions).toBe(true);
     useBrowseStore.getState().setAutoUpdateExtensions(false);
+  });
+});
+
+describe("browse store source display settings", () => {
+  beforeEach(() => {
+    resetMemoryStorage();
+    useBrowseStore.setState({
+      sourceDisplayMode: DEFAULT_SOURCE_DISPLAY_MODE,
+      sourceNovelsPerRow: DEFAULT_SOURCE_NOVELS_PER_ROW,
+    });
+  });
+
+  it("persists and rehydrates display mode and novels per row across sessions", async () => {
+    useBrowseStore.getState().setSourceDisplayMode("list");
+    useBrowseStore.getState().setSourceNovelsPerRow(5);
+
+    expect(useBrowseStore.getState().sourceDisplayMode).toBe("list");
+    expect(useBrowseStore.getState().sourceNovelsPerRow).toBe(5);
+
+    const saved = localStorage.getItem("browse-plugin-settings");
+    expect(saved).not.toBeNull();
+    expect(JSON.parse(saved!).state).toMatchObject({
+      sourceDisplayMode: "list",
+      sourceNovelsPerRow: 5,
+    });
+
+    useBrowseStore.setState({
+      sourceDisplayMode: DEFAULT_SOURCE_DISPLAY_MODE,
+      sourceNovelsPerRow: DEFAULT_SOURCE_NOVELS_PER_ROW,
+    });
+    localStorage.setItem("browse-plugin-settings", saved!);
+    await useBrowseStore.persist.rehydrate();
+
+    expect(useBrowseStore.getState().sourceDisplayMode).toBe("list");
+    expect(useBrowseStore.getState().sourceNovelsPerRow).toBe(5);
+  });
+
+  it("normalizes out-of-range column counts and unknown display modes", () => {
+    useBrowseStore.getState().setSourceDisplayMode("grid-99" as never);
+    useBrowseStore.getState().setSourceNovelsPerRow(0);
+    expect(useBrowseStore.getState().sourceDisplayMode).toBe(
+      DEFAULT_SOURCE_DISPLAY_MODE,
+    );
+    expect(useBrowseStore.getState().sourceNovelsPerRow).toBe(1);
+
+    useBrowseStore.getState().setSourceNovelsPerRow(12);
+    expect(useBrowseStore.getState().sourceNovelsPerRow).toBe(5);
   });
 });

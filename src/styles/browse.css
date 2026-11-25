@@ -449,6 +449,10 @@
   white-space: nowrap;
 }
 
+.norea-search-preview-card .norea-source-card-categories {
+  max-width: 100%;
+}
+
 .norea-source-cover-frame {
   display: inline-flex;
   position: relative;
@@ -623,6 +627,254 @@
   white-space: nowrap;
 }
 
+.norea-source-catalog-grid {
+  --norea-source-grid-gap: var(--norea-space-2);
+  --norea-source-grid-reference: 100%;
+  display: grid;
+  gap: var(--norea-source-grid-gap);
+  /* novelsPerRow sets the phone column count; a 6.5rem floor keeps large UI scales from overflowing. */
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(
+      min(
+        100%,
+        max(
+          6.5rem,
+          calc(
+            (var(--norea-source-grid-reference) - var(--norea-source-grid-gap) * (var(--norea-source-grid-columns) - 1)) /
+              var(--norea-source-grid-columns)
+          )
+        )
+      ),
+      1fr
+    )
+  );
+}
+
+.norea-source-catalog-grid[data-mode="cover-only"],
+.norea-source-catalog-grid[data-mode="compact"] {
+  --norea-source-grid-gap: var(--norea-space-1);
+}
+
+.norea-source-catalog-card {
+  -webkit-touch-callout: none;
+  background: none;
+  border: 0;
+  border-radius: var(--norea-radius-md);
+  color: var(--norea-color-ink);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: var(--norea-space-1);
+  padding: var(--norea-space-1);
+  text-align: left;
+  user-select: none;
+  width: 100%;
+}
+
+.norea-source-catalog-card:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.norea-source-catalog-card-cover {
+  border-radius: var(--norea-radius-sm);
+  display: block;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.norea-source-catalog-card-cover .norea-source-cover-frame {
+  display: block;
+  width: 100%;
+}
+
+.norea-source-catalog-card-cover .norea-console-cover {
+  aspect-ratio: 2 / 3;
+  display: flex;
+  height: auto;
+  max-width: 100%;
+  width: 100%;
+}
+
+.norea-source-catalog-card-text {
+  display: grid;
+  gap: 0.125rem;
+  min-width: 0;
+  padding: 0 var(--norea-space-1);
+  width: 100%;
+}
+
+.norea-source-catalog-card-title {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--norea-color-ink);
+  display: -webkit-box;
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-medium);
+  line-height: var(--norea-leading-normal);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.norea-source-catalog-card-categories {
+  color: var(--norea-color-accent);
+  display: block;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-source-catalog-card-overlay {
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
+  bottom: 0;
+  display: grid;
+  gap: 0.125rem;
+  left: 0;
+  padding: var(--norea-space-6) var(--norea-space-2) var(--norea-space-2);
+  position: absolute;
+  right: 0;
+  z-index: 1;
+}
+
+.norea-source-catalog-card-overlay .norea-source-catalog-card-title {
+  color: #fff;
+}
+
+.norea-source-catalog-card-overlay .norea-source-catalog-card-categories {
+  color: rgb(255 255 255 / 0.86);
+}
+
+.norea-source-catalog-list {
+  display: grid;
+}
+
+.norea-source-list-row {
+  width: 100%;
+}
+
+@media (hover: hover) {
+  .norea-quick-add-card:has(.norea-quick-add-button) .norea-source-list-row {
+    padding-inline-end: calc(var(--norea-control-sm) + var(--norea-space-5));
+  }
+}
+
+.norea-source-list-row:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.norea-source-row-cover {
+  display: flex;
+  position: relative;
+}
+
+.norea-source-row-categories {
+  color: var(--norea-color-accent);
+  display: block;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-source-row-library-mark {
+  align-items: center;
+  color: var(--norea-color-ok);
+  display: inline-flex;
+  justify-content: center;
+}
+
+.norea-source-skeleton-card {
+  display: grid;
+  gap: var(--norea-space-2);
+  min-width: 0;
+  padding: var(--norea-space-1);
+}
+
+.norea-source-skeleton-cover {
+  aspect-ratio: 2 / 3;
+  height: auto;
+  width: 100%;
+}
+
+.norea-source-skeleton-row {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-3);
+  padding: var(--norea-space-2) var(--norea-space-4);
+}
+
+.norea-source-skeleton-lines {
+  display: grid;
+  flex: 1 1 auto;
+  gap: var(--norea-space-2);
+}
+
+.norea-source-display-options .mantine-Radio-labelWrapper {
+  flex: 1 1 auto;
+}
+
+.norea-source-display-options .mantine-InputWrapper-label {
+  color: var(--norea-color-ink-muted);
+  display: block;
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-medium);
+  margin-bottom: var(--norea-space-1);
+}
+
+.norea-source-option-list .mantine-Radio-label {
+  align-items: center;
+  display: flex;
+  min-height: var(--norea-control-sm);
+  width: 100%;
+}
+
+.norea-source-stepper-row {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-3);
+  justify-content: space-between;
+}
+
+.norea-source-stepper-label {
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-medium);
+}
+
+.norea-source-stepper {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-2);
+}
+
+.norea-source-stepper-value {
+  font-size: var(--norea-text-md);
+  font-variant-numeric: tabular-nums;
+  min-width: 1.5rem;
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  .norea-source-catalog-grid {
+    --norea-source-grid-reference: min(100%, 48rem);
+  }
+}
+
+@media (any-pointer: coarse) {
+  .norea-source-display-options .mantine-Radio-label {
+    align-items: center;
+    display: flex;
+    min-height: var(--norea-control-md);
+  }
+}
+
 @media (max-width: 767px) {
   .norea-plugin-settings-editor .norea-settings-form-row {
     gap: var(--norea-space-2);
@@ -647,6 +899,19 @@
 .norea-source-card ~ .norea-quick-add-button,
 .norea-source-card ~ .norea-quick-add-pending {
   --norea-quick-add-inset: calc(var(--norea-space-2) + var(--norea-space-1));
+}
+
+.norea-source-catalog-card ~ .norea-quick-add-button,
+.norea-source-catalog-card ~ .norea-quick-add-pending {
+  --norea-quick-add-inset: calc(var(--norea-space-1) + var(--norea-space-1));
+}
+
+.norea-source-list-row ~ .norea-quick-add-button,
+.norea-source-list-row ~ .norea-quick-add-pending {
+  left: auto;
+  right: var(--norea-space-3);
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .norea-quick-add-card[data-pending="true"] > button:first-child {

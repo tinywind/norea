@@ -1218,6 +1218,144 @@ async fn work_categories_come_from_shared_state_until_the_work_has_local_categor
 }
 
 #[tokio::test]
+async fn path_only_work_category_lookups_match_synced_source_id_records_and_local_offline_works() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let binding = sample_binding();
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+    let b1 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    let synced_work = json!({
+        "pluginId": "bookkor",
+        "sourceNovelId": "8256",
+        "novelPath": "/novel/8256",
+        "name": "Synced Novel",
+    });
+    let page = json!({
+        "version": 1,
+        "workspaceId": binding.workspace_id,
+        "epoch": binding.epoch,
+        "headRevision": 4,
+        "through": 4,
+        "nextCursor": 4,
+        "hasMore": false,
+        "records": [
+            shared_record(
+                json!({ "kind": "category", "categoryId": "cat-stars" }),
+                json!({ "name": "5 Stars", "sort": 1, "deleted": false }),
+                1,
+                "op-1",
+            ),
+            shared_record(
+                json!({ "kind": "category", "categoryId": "cat-later" }),
+                json!({ "name": "Later", "sort": 2, "deleted": false }),
+                2,
+                "op-2",
+            ),
+            shared_record(
+                json!({ "kind": "membership", "work": synced_work, "categoryId": "cat-stars" }),
+                json!({ "included": true }),
+                3,
+                "op-3",
+            ),
+            shared_record(
+                json!({ "kind": "membership", "work": synced_work, "categoryId": "cat-later" }),
+                json!({ "included": true }),
+                4,
+                "op-4",
+            ),
+        ],
+    });
+    let b2 = binding.clone();
+    with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move { apply_user_state_read_page_in_tx(conn, ctx, &b2, &page).await })
+    })
+    .await
+    .unwrap();
+
+    // Local work with a local category (not in the shared state).
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) \
+         VALUES (10, 'bookkor', '9001', '/novel/9001', 'Local Only', 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO category(id, name, sort, is_system) VALUES (60, 'Favorite', 1, 0)")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO novel_category(novel_id, category_id) VALUES (10, 60)")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    // Source search results do not carry `novelId`.
+    let path_only_lookups = vec![
+        WorkCategoryLookupDto {
+            plugin_id: "bookkor".to_string(),
+            novel_id: String::new(),
+            novel_path: "/novel/8256".to_string(),
+        },
+        WorkCategoryLookupDto {
+            plugin_id: "bookkor".to_string(),
+            novel_id: String::new(),
+            novel_path: "/novel/9001".to_string(),
+        },
+    ];
+
+    // With a configured server, path-only lookups find both synced source-id records and local categories.
+    let mut conn = pool.acquire().await.unwrap();
+    let with_server =
+        list_work_categories_in_conn(&mut conn, "https://state.example", &path_only_lookups)
+            .await
+            .unwrap();
+    assert_eq!(
+        with_server.iter().map(|row| row.categories.clone()).collect::<Vec<_>>(),
+        vec![
+            vec!["5 Stars".to_string(), "Later".to_string()],
+            vec!["Favorite".to_string()],
+        ]
+    );
+
+    // An unsent local intent removing one category overrides the received record even on path-only lookup.
+    let removal_entity =
+        json!({ "kind": "membership", "work": synced_work, "categoryId": "cat-later" });
+    sqlx::query(
+        "INSERT INTO user_state_intent(entity_key, entity_json, value_json) VALUES (?1, ?2, ?3)",
+    )
+    .bind(user_state_entity_key(&removal_entity).unwrap())
+    .bind(removal_entity.to_string())
+    .bind(json!({ "included": false }).to_string())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let after_pending =
+        list_work_categories_in_conn(&mut conn, "https://state.example", &path_only_lookups)
+            .await
+            .unwrap();
+    assert_eq!(after_pending[0].categories, vec!["5 Stars".to_string()]);
+
+    // Without a configured server, local categories still answer cleanly.
+    let without_server = list_work_categories_in_conn(&mut conn, "", &path_only_lookups)
+        .await
+        .unwrap();
+    assert_eq!(
+        without_server.iter().map(|row| row.categories.clone()).collect::<Vec<_>>(),
+        vec![Vec::<String>::new(), vec!["Favorite".to_string()]]
+    );
+}
+
+#[tokio::test]
 async fn defer_user_state_for_novel_reopens_only_deferred_records() {
     use crate::db::content_sync::{delete_local_novel_records_in_tx, DeleteLocalNovelRecordsInputDto};
 

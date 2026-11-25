@@ -92,6 +92,7 @@ export function useQuickAddToLibrary(): {
       void addQuickAddTargetToLibrary(target, t("tasks.task.addToLibrary", { name }))
         .then((novelId) => {
           void queryClient.invalidateQueries({ queryKey: ["novel"] });
+          void queryClient.invalidateQueries({ queryKey: ["category"] });
           const toastId = `quick-add:${key}`;
           notifications.show({
             color: "ok",

@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   recoveryStopped: false,
   requestRecovery: vi.fn(),
   vpnStatus: { data: undefined, error: null, refetch: vi.fn() } as Record<string, unknown>,
+  workCategories: [] as Array<{ pluginId: string; novelPath: string; categories: string[] }>,
 }));
 
 vi.mock("../components/PdfReaderContent", () => ({ PdfReaderContent: () => null }));
@@ -32,6 +33,7 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ enabled, queryKey }: { enabled?: boolean; queryKey: unknown[] }) => {
     if (queryKey[1] === "installed") return { data: mocks.plugins, isLoading: false };
     if (queryKey[0] === "novel") return { data: [] };
+    if (queryKey[0] === "category") return { data: mocks.workCategories };
     if (queryKey[0] === "plugin-vpn") return mocks.vpnStatus;
     mocks.listingEnabled = enabled;
     return mocks.listing;
@@ -60,10 +62,12 @@ vi.mock("../lib/tasks/scheduler", async (original) => ({
 const { canLoadSourceListing, resolveSourcePluginVpnNotice, SourcePage } = await import("./source");
 const { BlockingLoadingOverlay, PageHeader, StateView } = await import("../components/AppFrame");
 const { CoverGridSkeleton } = await import("../components/browse/CoverGridSkeleton");
+const { SourceDisplaySheet } = await import("../components/browse/SourceDisplaySheet");
 const { PluginFilters } = await import("../components/PluginFilters");
 const { ResponsiveSheet } = await import("../components/ui/ResponsiveSheet");
 const { useNetworkStore } = await import("../lib/network");
 const { PluginVpnUnavailableError } = await import("../lib/plugin-vpn-traffic");
+const { DEFAULT_SOURCE_DISPLAY_MODE, DEFAULT_SOURCE_NOVELS_PER_ROW, useBrowseStore } = await import("../store/browse");
 const { usePluginVpnStore } = await import("../store/plugin-vpn");
 
 const genreFilters: Filters = {
@@ -89,6 +93,10 @@ let harness: BackNavigationHarness | undefined;
 let tree: ReactNode;
 
 beforeEach(() => {
+  useBrowseStore.setState({
+    sourceDisplayMode: DEFAULT_SOURCE_DISPLAY_MODE,
+    sourceNovelsPerRow: DEFAULT_SOURCE_NOVELS_PER_ROW,
+  });
   usePluginVpnStore.getState().setEnabled(false);
   useNetworkStore.setState({ connectivity: "online", revision: 1 });
   mocks.plugins = [plugin(genreFilters)];
@@ -98,6 +106,7 @@ beforeEach(() => {
   mocks.recovery = { failedAttempts: 0, lastError: null };
   mocks.recoveryStopped = false;
   mocks.vpnStatus = { data: undefined, error: null, refetch: vi.fn() };
+  mocks.workCategories = [];
 });
 
 afterEach(async () => {
@@ -411,6 +420,82 @@ describe("SourcePage", () => {
       retryable: false,
       title: "source.vpnUnavailableTitle",
     });
+  });
+
+  it("opens the source display sheet and renders catalog works with the persisted display mode, columns, and user categories", async () => {
+    mocks.plugins = [plugin()];
+    mocks.listing = {
+      data: {
+        items: [
+          { name: "Categorized Book", path: "/cat-book" },
+          { name: "Plain Book", path: "/plain-book" },
+        ],
+        page: 1,
+        scopeKey: "filters||{}|demo",
+      },
+      error: null,
+      isFetching: false,
+      refetch: vi.fn(),
+    };
+    mocks.workCategories = [
+      { pluginId: "demo", novelPath: "/cat-book", categories: ["5 Stars", "Reading"] },
+    ];
+
+    useBrowseStore.setState({ sourceDisplayMode: "comfortable", sourceNovelsPerRow: 4 });
+    let elements = await mountPage();
+
+    const displayButton = labelled(elements, "library.viewOptions.display");
+    expect(displayButton).toBeDefined();
+    expect(byType(elements, SourceDisplaySheet)[0]!.props.opened).toBe(false);
+
+    await harness!.run(() => (displayButton!.props.onClick as () => void)());
+    elements = collectElements(tree);
+    expect(byType(elements, SourceDisplaySheet)[0]!.props.opened).toBe(true);
+
+    const grid = elements.find((element) => element.props.className === "norea-source-catalog-grid")!;
+    expect(grid.props["data-mode"]).toBe("comfortable");
+    expect(grid.props.style).toEqual({ "--norea-source-grid-columns": 4 });
+
+    const novelCards = elements.filter((element) => (element.props.item as { path?: string } | undefined)?.path !== undefined);
+    expect(novelCards).toHaveLength(2);
+    expect(novelCards[0]!.props.categories).toEqual(["5 Stars", "Reading"]);
+    expect(novelCards[0]!.props.displayMode).toBe("comfortable");
+    expect(novelCards[1]!.props.categories).toEqual([]);
+
+    await harness!.run(() => useBrowseStore.getState().setSourceDisplayMode("list"));
+    elements = collectElements(tree);
+    const list = elements.find((element) => element.props.className === "norea-source-catalog-list")!;
+    expect(list.props["data-mode"]).toBe("list");
+    const listCards = elements.filter((element) => (element.props.item as { path?: string } | undefined)?.path !== undefined);
+    expect(listCards[0]!.props.displayMode).toBe("list");
+    expect(listCards[0]!.props.categories).toEqual(["5 Stars", "Reading"]);
+  });
+
+  it("updates source display mode and column count from SourceDisplaySheet and disables column steppers in list mode", async () => {
+    function SheetProbe() {
+      tree = SourceDisplaySheet({ onClose: vi.fn(), opened: true });
+      return null;
+    }
+    harness = mountBackNavigationHarness();
+    await harness.render(<SheetProbe />);
+
+    let elements = collectElements(tree);
+    const radioGroup = elements.find((element) => element.props.label === "librarySettings.displayMode")!;
+    const fewer = labelled(elements, "library.viewOptions.fewerColumns")!;
+    const more = labelled(elements, "library.viewOptions.moreColumns")!;
+
+    expect(radioGroup.props.value).toBe("comfortable");
+    expect(fewer.props.disabled).toBe(false);
+    expect(more.props.disabled).toBe(false);
+
+    await harness.run(() => (more.props.onClick as () => void)());
+    expect(useBrowseStore.getState().sourceNovelsPerRow).toBe(4);
+
+    await harness.run(() => (radioGroup.props.onChange as (value: string) => void)("list"));
+    elements = collectElements(tree);
+    expect(useBrowseStore.getState().sourceDisplayMode).toBe("list");
+    expect(labelled(elements, "library.viewOptions.fewerColumns")!.props.disabled).toBe(true);
+    expect(labelled(elements, "library.viewOptions.moreColumns")!.props.disabled).toBe(true);
   });
 });
 

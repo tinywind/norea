@@ -20,6 +20,7 @@ import {
   isCloudflareError,
   retryOnSourceAccessConfirmed,
   SearchFailures,
+  SearchResultSection,
   sortSourceResults,
   withRetryPluginId,
 } from "./BrowseSearchTab";
@@ -155,5 +156,45 @@ describe("SearchFailures", () => {
       { error: "boom", plugin: plugin("b") },
     ]);
     expect(buttonLabels($)).toEqual(["2 failed"]);
+  });
+});
+
+describe("SearchResultSection", () => {
+  it("shows user categories below matching search result cards and omits them otherwise", () => {
+    const $ = load(
+      renderToStaticMarkup(
+        <MantineProvider>
+          <SearchResultSection
+            categoriesOf={(pluginId, path) =>
+              pluginId === "bookkor" && path === "/0"
+                ? ["5 Stars", "Reading"]
+                : []
+            }
+            isInLibrary={() => false}
+            isQuickAddPending={() => false}
+            onMore={vi.fn()}
+            onOpen={vi.fn()}
+            onOpenSite={vi.fn()}
+            onOpenSource={vi.fn()}
+            onQuickAdd={vi.fn()}
+            onTogglePinned={vi.fn()}
+            openingKey={null}
+            pinned={false}
+            plugin={plugin("bookkor")}
+            result={result("bookkor", 2)}
+          />
+        </MantineProvider>,
+      ),
+    );
+
+    const cards = $(".norea-search-preview-card");
+    expect(cards).toHaveLength(2);
+    expect(cards.eq(0).find(".norea-source-card-categories").text()).toBe(
+      "5 Stars, Reading",
+    );
+    expect(cards.eq(0).find(".norea-source-card-categories").attr("title")).toBe(
+      "5 Stars, Reading",
+    );
+    expect(cards.eq(1).find(".norea-source-card-categories")).toHaveLength(0);
   });
 });

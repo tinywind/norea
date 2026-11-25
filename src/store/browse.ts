@@ -2,10 +2,15 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { GlobalSearchResult } from "../lib/plugins/global-search";
 import { taskScheduler } from "../lib/tasks/scheduler";
+import type { LibraryDisplayMode } from "./library";
 
 export const DEFAULT_SOURCE_WORK_CONCURRENCY = 3;
 export const DEFAULT_SOURCE_REQUEST_TIMEOUT_SECONDS = 30;
 export const DEFAULT_CHAPTER_DOWNLOAD_COOLDOWN_SECONDS = 1;
+export const DEFAULT_SOURCE_DISPLAY_MODE: LibraryDisplayMode = "comfortable";
+export const DEFAULT_SOURCE_NOVELS_PER_ROW = 3;
+export const MIN_SOURCE_NOVELS_PER_ROW = 1;
+export const MAX_SOURCE_NOVELS_PER_ROW = 5;
 
 function normalizeStringArray(
   value: unknown,
@@ -46,6 +51,25 @@ function normalizeChapterDownloadCooldownSeconds(value: unknown): number {
   return Math.max(0, Math.min(60, Math.round(numeric)));
 }
 
+function normalizeSourceDisplayMode(value: unknown): LibraryDisplayMode {
+  return value === "compact" ||
+    value === "comfortable" ||
+    value === "cover-only" ||
+    value === "list"
+    ? value
+    : DEFAULT_SOURCE_DISPLAY_MODE;
+}
+
+function normalizeSourceNovelsPerRow(value: unknown): number {
+  const numeric =
+    typeof value === "number" ? value : DEFAULT_SOURCE_NOVELS_PER_ROW;
+  if (!Number.isFinite(numeric)) return DEFAULT_SOURCE_NOVELS_PER_ROW;
+  return Math.max(
+    MIN_SOURCE_NOVELS_PER_ROW,
+    Math.min(MAX_SOURCE_NOVELS_PER_ROW, Math.round(numeric)),
+  );
+}
+
 export type GlobalSearchSort = "pinned" | "name";
 
 function normalizeGlobalSearchSort(value: unknown): GlobalSearchSort {
@@ -83,6 +107,10 @@ interface BrowseState {
   lastUsedPluginId: string | null;
   /** Order of global search result sections; the last choice is kept. */
   globalSearchSort: GlobalSearchSort;
+  /** Display layout for browsing a source catalog. */
+  sourceDisplayMode: LibraryDisplayMode;
+  /** Grid columns per row for browsing a source catalog. */
+  sourceNovelsPerRow: number;
   /** Install newer versions from each plugin's publisher without asking. */
   autoUpdateExtensions: boolean;
   globalSearch: BrowseGlobalSearchState;
@@ -95,6 +123,8 @@ interface BrowseState {
   togglePinnedPlugin: (pluginId: string) => void;
   setLastUsedPluginId: (pluginId: string | null) => void;
   setGlobalSearchSort: (sort: GlobalSearchSort) => void;
+  setSourceDisplayMode: (mode: LibraryDisplayMode) => void;
+  setSourceNovelsPerRow: (novelsPerRow: number) => void;
   setAutoUpdateExtensions: (enabled: boolean) => void;
   beginGlobalSearch: (search: BrowseGlobalSearchState) => void;
   appendGlobalSearchResult: (
@@ -117,6 +147,8 @@ export const useBrowseStore = create<BrowseState>()(
       pinnedPluginIds: [],
       lastUsedPluginId: null,
       globalSearchSort: "pinned",
+      sourceDisplayMode: DEFAULT_SOURCE_DISPLAY_MODE,
+      sourceNovelsPerRow: DEFAULT_SOURCE_NOVELS_PER_ROW,
       autoUpdateExtensions: false,
       globalSearch: EMPTY_GLOBAL_SEARCH,
       setPendingRepoUrl: (pendingRepoUrl) => set({ pendingRepoUrl }),
@@ -157,6 +189,12 @@ export const useBrowseStore = create<BrowseState>()(
       setLastUsedPluginId: (lastUsedPluginId) => set({ lastUsedPluginId }),
       setGlobalSearchSort: (globalSearchSort) =>
         set({ globalSearchSort: normalizeGlobalSearchSort(globalSearchSort) }),
+      setSourceDisplayMode: (sourceDisplayMode) =>
+        set({ sourceDisplayMode: normalizeSourceDisplayMode(sourceDisplayMode) }),
+      setSourceNovelsPerRow: (sourceNovelsPerRow) =>
+        set({
+          sourceNovelsPerRow: normalizeSourceNovelsPerRow(sourceNovelsPerRow),
+        }),
       setAutoUpdateExtensions: (autoUpdateExtensions) => set({ autoUpdateExtensions }),
       beginGlobalSearch: (globalSearch) => set({ globalSearch }),
       appendGlobalSearchResult: (searchKey, result) =>
@@ -219,6 +257,12 @@ export const useBrowseStore = create<BrowseState>()(
               ? persisted.lastUsedPluginId
               : null,
           globalSearchSort: normalizeGlobalSearchSort(persisted.globalSearchSort),
+          sourceDisplayMode: normalizeSourceDisplayMode(
+            persisted.sourceDisplayMode,
+          ),
+          sourceNovelsPerRow: normalizeSourceNovelsPerRow(
+            persisted.sourceNovelsPerRow,
+          ),
           autoUpdateExtensions: persisted.autoUpdateExtensions === true,
         };
       },
@@ -240,6 +284,10 @@ export const useBrowseStore = create<BrowseState>()(
         pinnedPluginIds: normalizeStringArray(state.pinnedPluginIds, []),
         lastUsedPluginId: state.lastUsedPluginId,
         globalSearchSort: normalizeGlobalSearchSort(state.globalSearchSort),
+        sourceDisplayMode: normalizeSourceDisplayMode(state.sourceDisplayMode),
+        sourceNovelsPerRow: normalizeSourceNovelsPerRow(
+          state.sourceNovelsPerRow,
+        ),
         autoUpdateExtensions: state.autoUpdateExtensions,
       }),
     },

@@ -57,6 +57,7 @@ import { openPluginSite } from "../../lib/plugins/open-plugin-site";
 import { isAbortError } from "../../lib/abort";
 import { describeError } from "../../lib/errors";
 import { useLibraryNovelMembership } from "../../lib/use-library-novel-membership";
+import { useUserWorkCategories } from "../../lib/use-user-work-categories";
 import { useBrowseStore, type GlobalSearchSort } from "../../store/browse";
 import "../../styles/browse.css";
 
@@ -317,6 +318,7 @@ interface SearchResultSectionProps {
   pinned: boolean;
   plugin: Plugin;
   result: GlobalSearchResult;
+  categoriesOf?: (pluginId: string, novelPath: string) => readonly string[];
   onMore: (row: GlobalSearchResult) => void;
   onOpen: (row: GlobalSearchResult, novel: NovelItem) => void;
   onQuickAdd: (target: QuickAddTarget) => void;
@@ -325,7 +327,10 @@ interface SearchResultSectionProps {
   onTogglePinned: (pluginId: string) => void;
 }
 
-function SearchResultSection({
+const EMPTY_CATEGORIES: readonly string[] = [];
+
+export function SearchResultSection({
+  categoriesOf,
   isInLibrary,
   isQuickAddPending,
   openingKey,
@@ -387,6 +392,7 @@ function SearchResultSection({
           const key = resultKey(result.pluginId, novel.path);
           const inLibrary = isInLibrary(result.pluginId, novel.path);
           const target: QuickAddTarget = { kind: "source", item: novel, plugin };
+          const categories = (categoriesOf?.(result.pluginId, novel.path) ?? EMPTY_CATEGORIES).join(", ");
           return (
             <QuickAddCard
               key={`${key}::${index}`}
@@ -408,6 +414,15 @@ function SearchResultSection({
               <span className="norea-search-preview-title" title={novel.name}>
                 {novel.name}
               </span>
+              {categories ? (
+                <span
+                  aria-label={`${t("categories.title")}: ${categories}`}
+                  className="norea-source-card-categories"
+                  title={categories}
+                >
+                  {categories}
+                </span>
+              ) : null}
             </QuickAddCard>
           );
         })}
@@ -726,6 +741,17 @@ export function BrowseSearchTab({
       ),
     [pinnedPluginIds, settledResults, sort],
   );
+  const previewCategoryTargets = useMemo(
+    () =>
+      sourcesWithResults.flatMap(({ result }) =>
+        result.novels.slice(0, PREVIEW_RESULT_COUNT).map((novel) => ({
+          pluginId: result.pluginId,
+          novelPath: novel.path,
+        })),
+      ),
+    [sourcesWithResults],
+  );
+  const categoriesOf = useUserWorkCategories(previewCategoryTargets);
   const emptySources = settledResults
     .filter(({ result }) => !result.error && result.novels.length === 0)
     .map(({ plugin }) => plugin);
@@ -1136,6 +1162,7 @@ export function BrowseSearchTab({
 
       {sourcesWithResults.map(({ plugin, result }) => (
         <SearchResultSection
+          categoriesOf={categoriesOf}
           isInLibrary={isInLibrary}
           isQuickAddPending={quickAdd.isPending}
           key={plugin.id}
