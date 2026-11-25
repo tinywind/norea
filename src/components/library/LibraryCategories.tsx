@@ -17,7 +17,16 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Text, UnstyledButton } from "@mantine/core";
-import { type CSSProperties, useEffect, useMemo, useRef } from "react";
+import {
+  type CSSProperties,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+  useEffect,
+  useMemo,
+  useRef,
+} from "react";
 import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
@@ -147,6 +156,114 @@ interface CategoryTabsProps {
 const WHEEL_DELTA_LINE = 1;
 const WHEEL_DELTA_PAGE = 2;
 const WHEEL_LINE_PIXELS = 16;
+const MOUSE_DRAG_THRESHOLD_PX = 6;
+
+interface HorizontalMouseDragState {
+  moved: boolean;
+  pointerId: number;
+  startScrollLeft: number;
+  startX: number;
+}
+
+function useHorizontalMouseDrag(stripRef: RefObject<HTMLDivElement | null>) {
+  const dragRef = useRef<HorizontalMouseDragState | null>(null);
+  const suppressClickRef = useRef(false);
+  const suppressClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearSuppressClick = () => {
+    if (suppressClickTimerRef.current !== null) {
+      clearTimeout(suppressClickTimerRef.current);
+      suppressClickTimerRef.current = null;
+    }
+    suppressClickRef.current = false;
+  };
+
+  const stopDragging = (strip: HTMLDivElement | null, suppressClick: boolean) => {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    if (!drag) return;
+    if (strip) {
+      if (drag.moved && strip.hasPointerCapture?.(drag.pointerId)) {
+        try {
+          strip.releasePointerCapture(drag.pointerId);
+        } catch {
+          // Ignore browsers that already released capture.
+        }
+      }
+      if (strip.dataset) delete strip.dataset.dragging;
+    }
+    if (suppressClick && drag.moved) {
+      clearSuppressClick();
+      suppressClickRef.current = true;
+      suppressClickTimerRef.current = setTimeout(() => {
+        suppressClickTimerRef.current = null;
+        suppressClickRef.current = false;
+      }, 0);
+    }
+  };
+
+  useEffect(() => clearSuppressClick, []);
+
+  return {
+    onClickCapture: (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (!suppressClickRef.current) return;
+      clearSuppressClick();
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    onDragStart: (event: ReactDragEvent<HTMLDivElement>) => {
+      const strip = stripRef.current;
+      if (strip && strip.scrollWidth > strip.clientWidth) {
+        event.preventDefault();
+      }
+    },
+    onLostPointerCapture: () => {
+      stopDragging(stripRef.current, false);
+    },
+    onPointerCancel: () => {
+      stopDragging(stripRef.current, false);
+    },
+    onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => {
+      clearSuppressClick();
+      if (event.pointerType !== "mouse" || event.button !== 0) return;
+      const strip = stripRef.current;
+      if (!strip || !(strip.scrollWidth > strip.clientWidth)) return;
+      dragRef.current = {
+        moved: false,
+        pointerId: event.pointerId,
+        startScrollLeft: strip.scrollLeft,
+        startX: event.clientX,
+      };
+    },
+    onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const strip = stripRef.current;
+      if (!strip) return;
+      if ((event.buttons & 1) === 0) {
+        stopDragging(strip, false);
+        return;
+      }
+      const deltaX = event.clientX - drag.startX;
+      if (!drag.moved) {
+        if (Math.abs(deltaX) < MOUSE_DRAG_THRESHOLD_PX) return;
+        drag.moved = true;
+        if (strip.dataset) strip.dataset.dragging = "true";
+        try {
+          strip.setPointerCapture?.(event.pointerId);
+        } catch {
+          // Synthetic pointer events in tests or detached nodes may reject capture.
+        }
+      }
+      strip.scrollLeft = drag.startScrollLeft - deltaX;
+    },
+    onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      stopDragging(stripRef.current, true);
+    },
+  };
+}
 
 function normalizeCategoryTabWheelDelta(
   strip: HTMLDivElement,
@@ -179,6 +296,7 @@ export function CategoryTabs({ activeId, entries, onSelect }: CategoryTabsProps)
   const stripRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLButtonElement>(null);
   const activeIndex = entries.findIndex((entry) => entry.id === activeId);
+  const mouseDragHandlers = useHorizontalMouseDrag(stripRef);
 
   useEffect(() => {
     const strip = stripRef.current;
@@ -211,6 +329,7 @@ export function CategoryTabs({ activeId, entries, onSelect }: CategoryTabsProps)
       className="norea-library-category-tabs"
       ref={stripRef}
       role="group"
+      {...mouseDragHandlers}
     >
       {entries.map((entry) => {
         const active = entry.id === activeId;

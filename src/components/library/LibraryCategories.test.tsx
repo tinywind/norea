@@ -261,17 +261,37 @@ function categoryTabsHarness() {
   });
   let bounds = { left: 280, right: 400 };
   let scrollWidth = 480;
+  let scrollLeft = 0;
+  const capturedPointers = new Set<number>();
+  const dataset: Record<string, string | undefined> = {};
+  const setPointerCapture = vi.fn((pointerId: number) => {
+    capturedPointers.add(pointerId);
+  });
+  const releasePointerCapture = vi.fn((pointerId: number) => {
+    capturedPointers.delete(pointerId);
+  });
+  const hasPointerCapture = vi.fn((pointerId: number) => capturedPointers.has(pointerId));
   const tab = { getBoundingClientRect: () => bounds, scrollIntoView } as unknown as HTMLButtonElement;
   const strip = {
     addEventListener,
     clientLeft: 0,
     clientWidth: 160,
+    dataset,
     getBoundingClientRect: () => ({ left: 100 }),
+    hasPointerCapture,
+    releasePointerCapture,
     removeEventListener,
     scrollBy,
+    get scrollLeft() {
+      return scrollLeft;
+    },
+    set scrollLeft(value: number) {
+      scrollLeft = value;
+    },
     get scrollWidth() {
       return scrollWidth;
     },
+    setPointerCapture,
   };
   let resize: (() => void) | undefined;
   vi.stubGlobal("ResizeObserver", class {
@@ -291,16 +311,68 @@ function categoryTabsHarness() {
   const buttons = () => collectElements(tree).filter((element) => "aria-pressed" in element.props);
   return {
     addEventListener,
+    dataset,
+    getScrollLeft: () => scrollLeft,
     getWheelListener: () => wheelListener,
     getWheelOptions: () => wheelOptions,
+    hasPointerCapture,
     onSelect,
+    releasePointerCapture,
     removeEventListener,
     scrollBy,
     scrollIntoView,
+    setPointerCapture,
     render: (activeId: number | null, values = entries) => harness.render(<Probe activeId={activeId} values={values} />),
     resize: () => resize?.(),
     setBounds: (left: number, right: number) => { bounds = { left, right }; },
+    setScrollLeft: (value: number) => { scrollLeft = value; },
     setScrollWidth: (width: number) => { scrollWidth = width; },
+    pointerDown: (init: Partial<PointerEvent>) => {
+      (tree.props.onPointerDown as (event: Partial<PointerEvent>) => void)({
+        button: 0,
+        buttons: 1,
+        clientX: 120,
+        pointerId: 1,
+        pointerType: "mouse",
+        ...init,
+      });
+    },
+    pointerMove: (init: Partial<PointerEvent>) => {
+      (tree.props.onPointerMove as (event: Partial<PointerEvent>) => void)({
+        buttons: 1,
+        clientX: 120,
+        pointerId: 1,
+        pointerType: "mouse",
+        ...init,
+      });
+    },
+    pointerUp: (init: Partial<PointerEvent> = {}) => {
+      (tree.props.onPointerUp as (event: Partial<PointerEvent>) => void)({
+        button: 0,
+        buttons: 0,
+        clientX: 120,
+        pointerId: 1,
+        pointerType: "mouse",
+        ...init,
+      });
+    },
+    pointerCancel: () => {
+      (tree.props.onPointerCancel as () => void)();
+    },
+    clickCapture: () => {
+      const preventDefault = vi.fn();
+      const stopPropagation = vi.fn();
+      (tree.props.onClickCapture as (event: { preventDefault: () => void; stopPropagation: () => void }) => void)({
+        preventDefault,
+        stopPropagation,
+      });
+      return { preventDefault, stopPropagation };
+    },
+    dragStart: () => {
+      const preventDefault = vi.fn();
+      (tree.props.onDragStart as (event: { preventDefault: () => void }) => void)({ preventDefault });
+      return preventDefault;
+    },
     wheel: (init: Partial<WheelEvent>) => {
       const preventDefault = vi.fn();
       wheelListener?.({
@@ -415,6 +487,71 @@ it("leaves horizontal wheel, ctrl+wheel zoom, and non-overflowing category strip
     const noOverflowPreventDefault = harness.wheel({ deltaY: 96 });
     expect(noOverflowPreventDefault).not.toHaveBeenCalled();
     expect(harness.scrollBy).not.toHaveBeenCalled();
+  } finally {
+    await harness.unmount();
+  }
+});
+
+it("scrolls category tabs horizontally on mouse drag and suppresses the post-drag click", async () => {
+  const harness = categoryTabsHarness();
+  try {
+    await harness.render(null);
+    harness.setScrollLeft(20);
+
+    harness.pointerDown({ clientX: 200, pointerId: 7 });
+    harness.pointerMove({ clientX: 196, pointerId: 7 });
+    expect(harness.getScrollLeft()).toBe(20);
+    expect(harness.dataset.dragging).toBeUndefined();
+    expect(harness.setPointerCapture).not.toHaveBeenCalled();
+
+    harness.pointerMove({ clientX: 120, pointerId: 7 });
+    expect(harness.getScrollLeft()).toBe(100);
+    expect(harness.dataset.dragging).toBe("true");
+    expect(harness.setPointerCapture).toHaveBeenCalledExactlyOnceWith(7);
+
+    harness.pointerUp({ clientX: 120, pointerId: 7 });
+    expect(harness.dataset.dragging).toBeUndefined();
+    expect(harness.releasePointerCapture).toHaveBeenCalledExactlyOnceWith(7);
+
+    const suppressed = harness.clickCapture();
+    expect(suppressed.preventDefault).toHaveBeenCalledOnce();
+    expect(suppressed.stopPropagation).toHaveBeenCalledOnce();
+
+    const nextClick = harness.clickCapture();
+    expect(nextClick.preventDefault).not.toHaveBeenCalled();
+    expect(nextClick.stopPropagation).not.toHaveBeenCalled();
+
+    expect(harness.dragStart()).toHaveBeenCalledOnce();
+  } finally {
+    await harness.unmount();
+  }
+});
+
+it("keeps short mouse clicks, touch drags, and non-overflowing strips out of mouse drag-scrolling", async () => {
+  const harness = categoryTabsHarness();
+  try {
+    await harness.render(null);
+
+    harness.pointerDown({ clientX: 150, pointerId: 1 });
+    harness.pointerMove({ clientX: 148, pointerId: 1 });
+    harness.pointerUp({ clientX: 148, pointerId: 1 });
+    const shortClick = harness.clickCapture();
+    expect(shortClick.preventDefault).not.toHaveBeenCalled();
+    expect(shortClick.stopPropagation).not.toHaveBeenCalled();
+    expect(harness.getScrollLeft()).toBe(0);
+
+    harness.pointerDown({ clientX: 150, pointerId: 2, pointerType: "touch" });
+    harness.pointerMove({ clientX: 60, pointerId: 2, pointerType: "touch" });
+    harness.pointerUp({ clientX: 60, pointerId: 2, pointerType: "touch" });
+    expect(harness.getScrollLeft()).toBe(0);
+    expect(harness.setPointerCapture).not.toHaveBeenCalled();
+
+    harness.setScrollWidth(160);
+    harness.pointerDown({ clientX: 150, pointerId: 3 });
+    harness.pointerMove({ clientX: 40, pointerId: 3 });
+    harness.pointerUp({ clientX: 40, pointerId: 3 });
+    expect(harness.getScrollLeft()).toBe(0);
+    expect(harness.dragStart()).not.toHaveBeenCalled();
   } finally {
     await harness.unmount();
   }

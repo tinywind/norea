@@ -141,6 +141,13 @@
   padding: 0 var(--norea-space-2);
   scroll-padding-inline: var(--norea-space-1);
   scrollbar-width: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.norea-library-category-tabs[data-dragging="true"],
+.norea-library-category-tabs[data-dragging="true"] .norea-library-category-tab {
+  cursor: grabbing;
 }
 
 .norea-library-category-tabs::-webkit-scrollbar {
