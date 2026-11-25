@@ -22,6 +22,7 @@ import { startUserStateScheduler } from "./lib/user-state/scheduler";
 import { initializeNetworkStatus } from "./lib/network";
 import { initializeTaskNetworkState } from "./lib/tasks/network-lifecycle";
 import { initializeDownloadFailureStopPersistence } from "./lib/tasks/download-failure-stop";
+import { initializeDownloadRecovery } from "./lib/tasks/download-recovery";
 import { taskScheduler } from "./lib/tasks/scheduler";
 import { initializeVpnDownloadRuntime } from "./lib/tasks/vpn-download-runtime";
 import {
@@ -225,6 +226,7 @@ function AppProviders() {
   );
 }
 
+initializeDownloadRecovery();
 initializeDownloadFailureStopPersistence(taskScheduler);
 initializeSourceAccessCoordinator();
 void initializeNetworkStatus();

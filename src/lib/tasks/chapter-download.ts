@@ -101,7 +101,14 @@ import {
   waitForAllChapterStorageOperations,
   waitForChapterStorageOperation,
 } from "./chapter-storage-operation";
-import { cancelInterceptedChapterDownloadBatch, interceptChapterDownload, interceptChapterDownloadBatch, isInterceptedChapterDownloadQueued } from "./chapter-download-batch-interceptor";
+import {
+  cancelInterceptedChapterDownloadBatch,
+  getInterceptedDownloadRecoveryState,
+  interceptChapterDownload,
+  interceptChapterDownloadBatch,
+  isInterceptedChapterDownloadQueued,
+  setDownloadRecoveryReconciler,
+} from "./chapter-download-batch-interceptor";
 
 export interface ChapterDownloadJob {
   id: number;
@@ -244,6 +251,7 @@ const CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS = 250;
 const CHAPTER_DOWNLOAD_QUEUE_REMOVE_CHUNK_SIZE = 500;
 
 let chapterDownloadQueueExecutorStarted = false;
+let ordinaryChapterDownloadQueueFullyRestored = false;
 let chapterDownloadQueueRestoration = Promise.resolve();
 let chapterDownloadLifecycleSuspending = false;
 let chapterDownloadLifecycleListenersInstalled = false;
@@ -251,6 +259,7 @@ let backendChapterDownloadQueueMutation: Promise<void> = Promise.resolve();
 const pendingBackendChapterDownloadJobsById = new Map<number, ChapterDownloadJob>();
 interface BackendChapterDownloadRegistration {
   ownerId: string;
+  sourceId: string;
   write: Promise<void>;
 }
 const backendChapterDownloadRegistrations = new Map<number, BackendChapterDownloadRegistration>();
@@ -843,7 +852,15 @@ function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>, ownerId: s
     try {
       await enqueueBackendChapterDownloadJobs(pending, recoveryPolicy);
       const discarded = pending.filter((job) => pendingBackendChapterDownloadJobsById.get(job.id) !== job);
-      await removeBackendChapterDownloadJobs(discarded.map((job) => job.id));
+      if (discarded.length > 0) {
+        await removeBackendChapterDownloadJobs(discarded.map((job) => job.id));
+        downloadRecovery.forget(
+          discarded
+            .filter((job) => !backendChapterDownloadRegistrations.has(job.id) && !pendingBackendChapterDownloadJobsById.has(job.id))
+            .map((job) => downloadRecoveryKey(job)),
+          true,
+        );
+      }
     } finally {
       for (const job of pending) {
         if (pendingBackendChapterDownloadJobsById.get(job.id) === job) pendingBackendChapterDownloadJobsById.delete(job.id);
@@ -853,7 +870,7 @@ function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>, ownerId: s
   });
   for (const job of queuedJobs) {
     pendingBackendChapterDownloadJobsById.set(job.id, job);
-    backendChapterDownloadRegistrations.set(job.id, { ownerId, write });
+    backendChapterDownloadRegistrations.set(job.id, { ownerId, sourceId: job.pluginId, write });
   }
   return write;
 }
@@ -1273,7 +1290,7 @@ function enqueueChapterDownloadForExecutor(
   }
   const sourceName = job.pluginName?.trim() || job.pluginId;
   let sourcePluginId = job.pluginId;
-  const recoveryPolicy = options.recoveryPolicy ?? getDownloadRecoveryPolicy();
+  const recoveryPolicy = options.recoveryPolicy ?? (options.persistBeforeStart !== false ? getDownloadRecoveryPolicy() : undefined);
   let recoveryProfile = options.recoveryProfile;
   const sourceCooldownKey = options.vpnWorker?.rangeId ?? job.pluginId;
   const sourceFallback = true;
@@ -1799,6 +1816,9 @@ function settleFailedChapterDownload(
     pendingBackendChapterDownloadJobsById.delete(job.id);
     backendChapterDownloadRegistrations.delete(job.id);
     await removeBackendChapterDownloadJobs([job.id]);
+    if (!backendChapterDownloadRegistrations.has(job.id) && !pendingBackendChapterDownloadJobsById.has(job.id)) {
+      downloadRecovery.forgetIdle([downloadRecoveryKey(job)]);
+    }
   });
 }
 
@@ -2247,8 +2267,11 @@ export function enqueueChapterDownloadBatch({
     if (intercepted) return intercepted;
   }
   const batchId = makeChapterDownloadBatchId();
-  const recoveryPolicy = getDownloadRecoveryPolicy();
+  const recoveryPolicy = persist ? getDownloadRecoveryPolicy() : undefined;
   const batchJobs = Array.isArray(jobs) ? jobs : null;
+  if (!persist && batchJobs && batchJobs.length > 0) {
+    downloadRecovery.restore(batchJobs);
+  }
   const total = normalizeChapterDownloadBatchTotal(jobs, requestedTotal);
   const windowSize = normalizeChapterDownloadBatchWindowSize(
     requestedWindowSize,
@@ -2262,7 +2285,7 @@ export function enqueueChapterDownloadBatch({
       const status = getChapterDownloadStatus(job.id);
       if (status?.kind !== "queued" && status?.kind !== "running" &&
         !pendingBackendChapterDownloadJobsById.has(job.id)) {
-        backendChapterDownloadRegistrations.set(job.id, { ownerId: batchId, write });
+        backendChapterDownloadRegistrations.set(job.id, { ownerId: batchId, sourceId: job.pluginId, write });
       }
     }
   }
@@ -2539,9 +2562,52 @@ async function pendingBackendChapterDownloadJobs(filters?: {
   }
   if (completedChapterIds.length > 0) {
     await removeBackendChapterDownloadJobs(completedChapterIds);
+    downloadRecovery.forget(completedChapterIds.map((id) => downloadRecoveryKey({ id })), true);
   }
   return { leased: jobs.length, pendingJobs };
 }
+
+function tryPruneDownloadRecovery(): void {
+  if (!ordinaryChapterDownloadQueueFullyRestored) return;
+  const vpnState = getInterceptedDownloadRecoveryState();
+  if (vpnState === null) return;
+  const activeKeys = new Set<string>(vpnState?.keys);
+  const activeSourceIds = new Set<string>(vpnState?.sourceIds);
+  for (const job of pendingBackendChapterDownloadJobsById.values()) {
+    activeKeys.add(downloadRecoveryKey(job));
+    activeSourceIds.add(job.pluginId);
+  }
+  for (const [id, registration] of backendChapterDownloadRegistrations) {
+    activeKeys.add(downloadRecoveryKey({ id }));
+    activeSourceIds.add(registration.sourceId);
+  }
+  for (const state of chapterDownloadBatchStates.values()) {
+    if (state.cancelRequested) continue;
+    for (const id of state.queuedChapterIds) {
+      if (!state.cancelledChapterIds.has(id) && !state.settledChapterIds.has(id)) {
+        activeKeys.add(downloadRecoveryKey({ id }));
+      }
+    }
+  }
+  for (const id of ordinaryChapterDownloadHandles.keys()) {
+    activeKeys.add(downloadRecoveryKey({ id }));
+    const task = taskScheduler.getTaskByDedupeKey?.(chapterDownloadDedupeKey(id));
+    if (task?.source?.id) activeSourceIds.add(task.source.id);
+  }
+  for (const [id, tracker] of chapterMediaRepairLatestTask) {
+    if (tracker.settled) continue;
+    activeKeys.add(downloadRecoveryKey({ id }));
+    const task = taskScheduler.getTaskByDedupeKey?.(chapterMediaRepairDedupeKey(id));
+    if (task?.source?.id) activeSourceIds.add(task.source.id);
+  }
+  try {
+    downloadRecovery.prune(activeKeys, activeSourceIds);
+  } catch (error) {
+    console.warn("[chapter-download] failed to prune stale download recovery state:", error);
+  }
+}
+
+setDownloadRecoveryReconciler(tryPruneDownloadRecovery);
 
 async function runBackendChapterDownloadExecutor(onRestored: () => void): Promise<void> {
   const restoredChapterIds = new Set<number>();
@@ -2586,6 +2652,8 @@ async function runBackendChapterDownloadExecutor(onRestored: () => void): Promis
           },
         );
       await restoreHandle?.materialized;
+      ordinaryChapterDownloadQueueFullyRestored = true;
+      tryPruneDownloadRecovery();
       markRestored();
       if (!restoreHandle) {
         if (leased === 0) return;
@@ -2634,6 +2702,7 @@ async function runBackendChapterDownloadExecutor(onRestored: () => void): Promis
             }
             if (completedChapterIds.length > 0) {
               await removeBackendChapterDownloadJobs(completedChapterIds);
+              downloadRecovery.forget(completedChapterIds.map((id) => downloadRecoveryKey({ id })), true);
             }
             if (jobs.length === 0) {
               return null;
@@ -2695,6 +2764,8 @@ async function runBackendChapterDownloadExecutor(onRestored: () => void): Promis
       continue;
     }
     if (leasedJobs.length === 0) {
+      ordinaryChapterDownloadQueueFullyRestored = true;
+      tryPruneDownloadRecovery();
       if (activeRestorePromises.size === 0) return;
       await Promise.race([...activeRestorePromises]);
     }
@@ -2710,6 +2781,7 @@ export function startChapterDownloadQueueExecutor(
 ): void {
   if (chapterDownloadQueueExecutorStarted || !isTauriRuntime()) return;
   chapterDownloadQueueExecutorStarted = true;
+  ordinaryChapterDownloadQueueFullyRestored = false;
 
   let onRestored!: () => void;
   chapterDownloadQueueRestoration = new Promise<void>((resolve) => { onRestored = resolve; });
