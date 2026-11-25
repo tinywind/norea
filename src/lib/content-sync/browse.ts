@@ -9,7 +9,7 @@ import { registerContentDevice } from "./device";
 import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 import { rememberServerNovelSource, type ServerNovelSource } from "./novel-source";
 import { pullWorkOverride } from "./work-overrides";
-import { contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
+import { clearDeletedWorkMetadataState, contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
 import { fetchServerChapters } from "./chapters";
 import { cacheServerChapters, isNovelMigrationSourceHeld, listNovelMigrations } from "../../db/queries/content-sync";
 import { listIncomingMigrationSummaries } from "./migration-feed-state";
@@ -219,7 +219,7 @@ export async function refreshServerNovel(
   expectedNovel?: { id: number; identity: MigrationWorkIdentity },
 ): Promise<number> {
   const server = normalizeContentServerUrl(source.serverUrl);
-  return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, async excluded => {
+  return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, async (excluded, deletionScope) => {
     const token = await registerContentDevice(server, useContentSyncStore.getState().deviceName);
     const entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${encodeURIComponent(source.workId)}`, token);
     const metadata = parseNovelMetadata(entry.metadata);
@@ -227,10 +227,17 @@ export async function refreshServerNovel(
     if (expectedNovel && migrationIdentityKey(metadata.identity) !== migrationIdentityKey(expectedNovel.identity)) {
       throw new Error("The server migration target identity changed before refresh.");
     }
+    if (entry.deleted) throw new ContentServerError(410);
+    await waitForServerWorkDeletion(server, source.workId);
+    const isDeleted = () => excluded.has(serverWorkDeletionKey(metadata.identity));
+    let clearedExclusion = false;
+    if (isDeleted() && !await isNovelMigrationSourceHeld(server, metadata.identity)) {
+      clearedExclusion = await deletionScope.clearRestoredWorkExclusion(metadata.identity, entry.sequence);
+    }
+    if (isDeleted()) throw new ContentServerError(410);
     const cover = entry.hasCover ? await readServerCover(server, token, source.workId) : null;
     const chapters = await fetchServerChapters({ serverUrl: server, workId: source.workId }, token);
     await waitForServerWorkDeletion(server, source.workId);
-    const isDeleted = () => excluded.has(serverWorkDeletionKey(metadata.identity));
     if (isDeleted()) throw new ContentServerError(410);
     const current = !requireNewWork
       ? await readStoredNovelMetadata(knownNovelMetadataDirectory(metadata.identity) ?? await availableNovelMetadataDirectory(metadata))
@@ -278,6 +285,7 @@ export async function refreshServerNovel(
     if (isDeleted()) throw new ContentServerError(410);
     if (installed === null && retainedNovelId === null) throw new Error("The local work changed while opening it. Open the work again.");
     if (installed !== null) await recordInstalledWorkMetadata(server, installed, entry.hasCover);
+    else if (clearedExclusion) await clearDeletedWorkMetadataState(server, source.workId);
     const novel = await findNovelBySource(metadata.identity.pluginId, metadata.identity.novelPath);
     if (!novel) throw new Error("Installed server work is missing from the local index.");
     if (isDeleted()) throw new ContentServerError(410);

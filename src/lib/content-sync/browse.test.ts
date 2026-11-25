@@ -26,11 +26,11 @@ import { contentWorkId, recordInstalledWorkMetadata } from "./works";
 import { findNovelBySource } from "../../db/queries/novel";
 import { reindexPreservedWorkMetadata } from "../../db/work-metadata";
 import { fetchServerChapters } from "./chapters";
-import { cacheServerChapters, listNovelMigrations } from "../../db/queries/content-sync";
+import { cacheServerChapters, listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { listIncomingMigrationSummaries, type IncomingMigrationSummary } from "./migration-feed-state";
 import type { PendingNovelMigration } from "./novel-migration-types";
 import { chapterCompositionCatalog, type ChapterCompositionV1 } from "../chapter-composition";
-import { recordServerWorkDeletionExclusion } from "./deletion-exclusions";
+import { readServerWorkDeletionExclusions, recordServerWorkDeletionExclusion } from "./deletion-exclusions";
 
 const metadata: NovelMetadataV1 = {
   schemaVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book" },
@@ -44,6 +44,9 @@ const installed = {
 };
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal("window", new EventTarget());
+  const cache = new Map<string, string>();
+  vi.mocked(readContentSyncCache).mockReset().mockImplementation(async key => cache.get(key) ?? null);
+  vi.mocked(writeContentSyncCache).mockReset().mockImplementation(async (key, value) => { cache.set(key, value); });
   vi.mocked(installStoredNovelMetadata).mockReset().mockResolvedValue(installed);
   vi.mocked(listNovelMigrations).mockReset().mockResolvedValue([]);
   vi.mocked(listIncomingMigrationSummaries).mockReset().mockResolvedValue([]);
@@ -52,6 +55,33 @@ beforeEach(() => {
   vi.mocked(fetchServerChapters).mockReset().mockResolvedValue([]);
   vi.mocked(findNovelBySource).mockReset().mockResolvedValue({ id: 42, sourceNovelId: "book" } as Awaited<ReturnType<typeof findNovelBySource>>);
   vi.mocked(reindexPreservedWorkMetadata).mockReset().mockResolvedValue(42);
+});
+
+it("clears a prior explicit deletion exclusion when opening a server-restored work", async () => {
+  const id = await contentWorkId(metadata.identity);
+  await recordServerWorkDeletionExclusion("http://server", metadata.identity, 5);
+  vi.mocked(contentServerRequest).mockResolvedValue({ id, sequence: 6, metadata, hasCover: false });
+
+  expect(await refreshServerNovel({ serverUrl: "http://server", workId: id }, true)).toBe(42);
+  expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set());
+  expect(installStoredNovelMetadata).toHaveBeenCalledWith(metadata, undefined, expect.any(Function));
+  expect(recordInstalledWorkMetadata).toHaveBeenCalledWith("http://server", installed, false);
+  expect(rememberServerNovelSource).toHaveBeenCalledWith(42, { serverUrl: "http://server", workId: id });
+});
+
+it("keeps a prior explicit deletion exclusion when the server returns a stale sequence or active migration hold", async () => {
+  const id = await contentWorkId(metadata.identity);
+  await recordServerWorkDeletionExclusion("http://server", metadata.identity, 5);
+  vi.mocked(contentServerRequest).mockResolvedValue({ id, sequence: 5, metadata, hasCover: false });
+
+  await expect(refreshServerNovel({ serverUrl: "http://server", workId: id }, true)).rejects.toMatchObject({ status: 410 });
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+
+  vi.mocked(listNovelMigrations).mockResolvedValue([{ source: metadata.identity, status: "pending" }] as never);
+  vi.mocked(contentServerRequest).mockResolvedValue({ id, sequence: 9, metadata, hasCover: false });
+
+  await expect(refreshServerNovel({ serverUrl: "http://server", workId: id }, true)).rejects.toMatchObject({ status: 410 });
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
 });
 
 it.each(["response", "install"])("discards a server work deleted during its delayed %s", async phase => {

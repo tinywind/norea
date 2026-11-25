@@ -15,6 +15,7 @@ import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { installStoredNovelMetadata, listStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover } from "../work-metadata";
 import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint } from "../../db/work-metadata";
+import { readServerWorkDeletionExclusions } from "./deletion-exclusions";
 import { syncWorkMetadata, contentWorkId, canPullWorkMetadata, recordInstalledWorkMetadata, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint } from "./works";
 import { releaseMigratedTargetMetadataInTestDb } from "../../test/mock-content-sync-ipc";
 
@@ -210,7 +211,7 @@ it("keeps explicitly deleted work excluded after reloading sync caches and resca
   expect(puts).toBe(1);
 });
 
-it("excludes an explicitly deleted work by plugin-owned ID across source-path aliases", async () => {
+it("excludes an explicitly deleted work by plugin-owned ID across source-path aliases while the server entry is not newer", async () => {
   const original = metadata();
   const aliased = { ...metadata("Local alias"), identity: { ...original.identity, novelPath: "/changed-route" } };
   local = [{ directory: "contents/example/book", metadata: aliased }];
@@ -218,7 +219,7 @@ it("excludes an explicitly deleted work by plugin-owned ID across source-path al
   const aliasId = await contentWorkId(aliased.identity);
   await recordDeletedWorkMetadata("http://server", { id, sequence: 1, metadata: original, hasCover: false, deleted: true });
   remote = original;
-  sequence = 2;
+  sequence = 1;
 
   const { deletedWorks: excluded } = await syncWorkMetadata("http://server", "device", true, undefined, true);
 
@@ -228,15 +229,46 @@ it("excludes an explicitly deleted work by plugin-owned ID across source-path al
   expect(local).toEqual([{ directory: "contents/example/book", metadata: aliased }]);
 });
 
-it("does not reinstall a fully removed explicit deletion when a server record reappears", async () => {
+it("lifts an explicit deletion exclusion when a newer server restoration arrives without reinstalling removed works", async () => {
   const id = await contentWorkId(metadata().identity);
   await recordDeletedWorkMetadata("http://server", { id, sequence: 1, metadata: metadata(), hasCover: false, deleted: true });
   remote = metadata();
   sequence = 2;
 
-  expect((await syncWorkMetadata("http://server", "device", false, undefined, true)).deletedWorks).toEqual(new Set([id]));
+  expect((await syncWorkMetadata("http://server", "device", false, undefined, true)).deletedWorks).toEqual(new Set());
+  expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set());
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
   expect(local).toEqual([]);
+});
+
+it("lifts a legacy explicit deletion exclusion when the server restores the work and resumes syncing local files", async () => {
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
+  const id = await contentWorkId(metadata().identity);
+  memory.set("norea-content-work-deletions:http://server", JSON.stringify(["contents/example/book"]));
+  remote = metadata("Restored on server");
+  sequence = 5;
+
+  const result = await syncWorkMetadata("http://server", "device", true);
+
+  expect(result.deletedWorks).toEqual(new Set());
+  expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set());
+  expect(JSON.parse(memory.get("norea-content-works:http://server")!).fingerprints[id]).toEqual(expect.any(String));
+  expect(puts).toBe(1);
+});
+
+it("keeps a migration hold excluded even when a newer non-deleted server revision arrives", async () => {
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
+  const id = await contentWorkId(metadata().identity);
+  await recordDeletedWorkMetadata("http://server", { id, sequence: 1, metadata: metadata(), hasCover: false, deleted: true });
+  vi.mocked(listNovelMigrations).mockResolvedValue([{ source: metadata().identity, status: "pending" }] as never);
+  remote = metadata("Restored on server");
+  sequence = 2;
+
+  const result = await syncWorkMetadata("http://server", "device", true, undefined, true);
+
+  expect(result.deletedWorks).toEqual(new Set([id]));
+  expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set(["contents/example/book"]));
+  expect(puts).toBe(0);
 });
 
 it("records an explicit exclusion without rewriting the active synchronization checkpoint", async () => {

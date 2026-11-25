@@ -4,6 +4,8 @@ vi.mock("./migration-feed-state", () => ({ listIncomingMigrationSummaries: vi.fn
 import { listNovelMigrations, readContentSyncCache, recordContentSourceDownload, writeContentSyncCache } from "../../db/queries/content-sync";
 import { useContentSyncStore } from "../../store/content-sync";
 import {
+  clearServerWorkDeletionExclusion,
+  publishNovelMigrationSourceHold,
   readServerChapterDeletionExclusions,
   readServerWorkDeletionExclusions,
   recordChapterSourceDownload,
@@ -85,10 +87,57 @@ it("persists an explicit deletion without copying unrelated received holds", asy
   vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([{ source, target: source, status: "completed",
     lineage: { sourceWork: { id: "source" }, targetWork: { id: "target", identity: source } } }] as never);
   await recordServerWorkDeletionExclusion("http://server", { pluginId: "other", novelId: "work" });
-  expect(JSON.parse(memory.get("norea-content-work-deletions:http://server")!)).toEqual(["contents/other/work"]);
-  await recordServerWorkDeletionExclusion("http://server", source);
+  expect(JSON.parse(memory.get("norea-content-work-deletions:http://server")!)).toEqual({ "contents/other/work": null });
+  await recordServerWorkDeletionExclusion("http://server", source, 7);
   vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([]);
   expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set(["contents/other/work", "contents/source/work"]));
+  expect(JSON.parse(memory.get("norea-content-work-deletions:http://server")!)).toEqual({
+    "contents/other/work": null,
+    "contents/source/work": 7,
+  });
+});
+
+it("clears an explicit work deletion only when a newer server sequence confirms restoration", async () => {
+  const work = { pluginId: "source", novelId: "book" };
+  await recordServerWorkDeletionExclusion("http://server", work, 10);
+  expect(await clearServerWorkDeletionExclusion("http://server", work, { ifSequenceBelow: 10 })).toBe(false);
+  expect(await clearServerWorkDeletionExclusion("http://server", work, { ifSequenceBelow: 9 })).toBe(false);
+  expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set(["contents/source/book"]));
+
+  expect(await clearServerWorkDeletionExclusion("http://server", work, { ifSequenceBelow: 11 })).toBe(true);
+  expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set());
+  expect(JSON.parse(memory.get("norea-content-work-deletions:http://server")!)).toEqual({});
+});
+
+it("clears legacy array-format explicit deletions on restore while keeping migration holds protected", async () => {
+  const restored = { pluginId: "source", novelId: "restored" };
+  const migrated = { pluginId: "source", novelId: "migrated" };
+  memory.set("norea-content-work-deletions:http://server", JSON.stringify(["contents/source/restored", "contents/source/migrated"]));
+  vi.mocked(listNovelMigrations).mockResolvedValue([{ source: migrated, status: "pending" }] as never);
+
+  await withServerWorkDeletionExclusions("http://server", async (excluded, scope) => {
+    expect(excluded.has("contents/source/restored")).toBe(true);
+    expect(excluded.has("contents/source/migrated")).toBe(true);
+    expect(await scope.clearRestoredWorkExclusion(migrated, 5)).toBe(false);
+    expect(excluded.has("contents/source/migrated")).toBe(true);
+    expect(await scope.clearRestoredWorkExclusion(restored, 5)).toBe(true);
+    expect(excluded.has("contents/source/restored")).toBe(false);
+  });
+
+  expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set(["contents/source/migrated"]));
+});
+
+it("does not clear a work exclusion recorded concurrently inside an active scope", async () => {
+  const work = { pluginId: "source", novelId: "book" };
+  const held = { pluginId: "source", novelId: "held" };
+  await withServerWorkDeletionExclusions("http://server", async (excluded, scope) => {
+    await recordServerWorkDeletionExclusion("http://server", work, 1);
+    publishNovelMigrationSourceHold("http://server", held);
+    expect(await scope.clearRestoredWorkExclusion(work, 2)).toBe(false);
+    expect(await scope.clearRestoredWorkExclusion(held, 2)).toBe(false);
+    expect(excluded.has("contents/source/book")).toBe(true);
+    expect(excluded.has("contents/source/held")).toBe(true);
+  });
 });
 
 it("preserves concurrent chapter deletion exclusions on the same server", async () => {
