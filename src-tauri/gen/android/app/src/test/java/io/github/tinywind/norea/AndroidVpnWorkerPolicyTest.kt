@@ -253,15 +253,14 @@ class AndroidVpnWorkerPolicyTest {
   }
 
   @Test
-  fun capabilityResultRequiresApi28AndBothWebViewFeatures() {
+  fun capabilityResultRequiresApi28AndProxyOverride() {
     val unsupported = mapOf("supported" to false, "parallelSupported" to false, "maxWorkers" to 0)
     val supported = mapOf("supported" to true, "parallelSupported" to false, "maxWorkers" to 1)
-    assertEquals(unsupported, androidVpnWorkerCapabilities(27, true, true))
-    assertEquals(unsupported, androidVpnWorkerCapabilities(28, false, true))
-    assertEquals(unsupported, androidVpnWorkerCapabilities(28, true, false))
-    assertEquals(unsupported, androidVpnWorkerCapabilities(36, false, false))
-    assertEquals(supported, androidVpnWorkerCapabilities(28, true, true))
-    assertEquals(supported, androidVpnWorkerCapabilities(36, true, true))
+    assertEquals(unsupported, androidVpnWorkerCapabilities(27, true))
+    assertEquals(unsupported, androidVpnWorkerCapabilities(28, false))
+    assertEquals(unsupported, androidVpnWorkerCapabilities(36, false))
+    assertEquals(supported, androidVpnWorkerCapabilities(28, true))
+    assertEquals(supported, androidVpnWorkerCapabilities(36, true))
   }
 
   @Test

@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import io.github.tinywind.norea.AppLog as Log
@@ -11,6 +12,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -140,7 +142,8 @@ class AndroidScraperBridge(
 
   private fun cookieSummary(state: AndroidScraperState, url: String?): String {
     if (url.isNullOrBlank()) return "<none>"
-    val cookieManager = state.webView?.let(::profileCookieManager) ?: return "<unavailable>"
+    if (state.webView == null) return "<unavailable>"
+    val cookieManager = profileCookieManager()
     val header = cookieManager.getCookie(url) ?: return "<empty>"
     val names = header.split(";")
       .mapNotNull { cookie -> cookie.substringBefore("=").trim().takeIf { it.isNotEmpty() } }
@@ -969,13 +972,18 @@ class AndroidScraperBridge(
     }
   }
 
-  private fun profileCookieManager(webView: WebView): CookieManager {
-    if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-      throw UnsupportedOperationException(
-        "Shared site browser data requires an updated Android System WebView",
-      )
+  private fun profileCookieManager(): CookieManager = AndroidSiteBrowserOwner.cookieManager()
+
+  private fun rendererStatusForLog(webView: WebView): String {
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.GET_WEB_VIEW_RENDERER)) {
+      return "renderer=unsupported"
     }
-    return WebViewCompat.getProfile(webView).cookieManager
+    val alive = runCatching { WebViewCompat.getWebViewRenderProcess(webView) != null }.getOrNull()
+    return when (alive) {
+      true -> "renderer=alive"
+      false -> "renderer=missing"
+      null -> "renderer=error"
+    }
   }
 
   private fun destroyScraperWebView(
@@ -992,10 +1000,7 @@ class AndroidScraperBridge(
     clearExtractScript(state)
     cancelConcurrentFetches(state, "scraper: webview closed during $reason")
     webView.stopLoading()
-    runCatching { profileCookieManager(webView).flush() }
-      .onFailure { error ->
-        Log.w(TAG, "[${state.key}] could not flush source profile before $reason", error)
-      }
+    AndroidSiteBrowserOwner.flushCookiesAsync()
     scraperContainer().removeView(webView)
     webView.destroy()
     if (state.webView === webView) {
@@ -1010,7 +1015,7 @@ class AndroidScraperBridge(
     val webView = createScraperWebView(state, userAgent)
     state.webView = webView
     state.userAgent = webView.settings.userAgentString
-    logState(state, "created shared-profile scraper webview")
+    logState(state, "created default-profile scraper webview")
     return webView
   }
 
@@ -1019,15 +1024,9 @@ class AndroidScraperBridge(
     state: AndroidScraperState,
     userAgent: String?,
   ): WebView {
-    val sourceId = state.sourceId
+    state.sourceId
       ?: throw IllegalStateException("Source profile was not assigned before WebView creation")
-    if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-      throw UnsupportedOperationException(
-        "Shared site browser data requires an updated Android System WebView",
-      )
-    }
     val webView = WebView(mainWebView.context)
-    WebViewCompat.setProfile(webView, sharedSiteBrowserProfileName())
     webView.settings.apply {
       allowContentAccess = false
       allowFileAccess = false
@@ -1046,7 +1045,7 @@ class AndroidScraperBridge(
     }
     AndroidBrowserEnvironment.apply(webView, userAgent)
     AndroidSiteBrowserOwner.registerView(webView, browserOwnerId)
-    profileCookieManager(webView).apply {
+    profileCookieManager().apply {
       setAcceptCookie(true)
       setAcceptThirdPartyCookies(webView, true)
     }
@@ -1059,6 +1058,9 @@ class AndroidScraperBridge(
     }
     webView.webViewClient = makeClient(state, null)
     webView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      webView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+    }
     webView.isClickable = false
     webView.isFocusable = false
     webView.isFocusableInTouchMode = false
@@ -1160,6 +1162,9 @@ class AndroidScraperBridge(
     webView.translationZ = 10_000f
     webView.elevation = 10_000f
     webView.visibility = View.VISIBLE
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      webView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_AUTO
+    }
     webView.isClickable = true
     webView.isFocusable = true
     webView.isFocusableInTouchMode = true
@@ -1186,7 +1191,7 @@ class AndroidScraperBridge(
       }
     }
     hideScraperSurface(state)
-    state.webView?.let { profileCookieManager(it).flush() }
+    if (state.webView != null) AndroidSiteBrowserOwner.flushCookiesAsync()
     if (emitHiddenEvent) emitSiteBrowserHidden()
     logState(state, "hideScraper after")
     runNextAfterPendingBlank(state)
@@ -1204,6 +1209,9 @@ class AndroidScraperBridge(
     webView.translationX = -10000f
     webView.translationY = -10000f
     webView.translationZ = 0f
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      webView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+    }
     webView.isClickable = false
     webView.isFocusable = false
     webView.isFocusableInTouchMode = false
@@ -1333,7 +1341,13 @@ class AndroidScraperBridge(
         )) {
         return@Runnable
       }
-      Log.w(TAG, "[${state.key}] blank navigation timed out; recreating scraper WebView")
+      Log.w(
+        TAG,
+        singleLineLogMessage(
+          "[${state.key}] blank navigation timed out (${rendererStatusForLog(webView)} " +
+            "webViewUrl=${urlForLog(webView.url)}); recreating scraper WebView",
+        ),
+      )
       finishBlankNavigation(state, webView, recreateWebView = true)
     }
     state.activeTimeout = timeout
@@ -1414,7 +1428,7 @@ class AndroidScraperBridge(
       }
       state.currentUrl = url
       state.contextReady = isHttpUrl(url)
-      profileCookieManager(view).flush()
+      AndroidSiteBrowserOwner.flushCookiesAsync()
       recordVpnNavigationResponse(view, url)
       logState(state, "pageFinished url=$url", url)
       onFinished?.invoke(url)
@@ -1476,6 +1490,31 @@ class AndroidScraperBridge(
       if (error.url == view.url || error.url == state.currentUrl) {
         failNavigation("scraper: TLS certificate error ${error.primaryError} at ${error.url}")
       }
+    }
+
+    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+      Log.w(
+        TAG,
+        singleLineLogMessage(
+          "[${state.key}] scraper WebView renderer gone didCrash=${detail.didCrash()} " +
+            "priority=${detail.rendererPriorityAtExit()} currentView=${state.webView === view}",
+        ),
+      )
+      if (state.webView !== view) return true
+      val reason = "scraper: browser renderer stopped (didCrash=${detail.didCrash()})"
+      if (state.blankNavigationInProgress) {
+        finishBlankNavigation(state, view, recreateWebView = true)
+      } else {
+        destroyScraperWebView(state, view, "renderer gone")
+        val id = state.activeFetchId ?: state.activeExtractId ?: state.activeAction?.id
+        if (id != null) {
+          mainFrameFailed = true
+          state.contextReady = false
+          state.pendingDocumentReady = null
+          finishError(state, id, reason)
+        }
+      }
+      return true
     }
   }
 
@@ -1560,7 +1599,8 @@ class AndroidScraperBridge(
       return
     }
 
-    val cookieManager = profileCookieManager(scraper(state, payloadUserAgent(payload)))
+    scraper(state, payloadUserAgent(payload))
+    val cookieManager = profileCookieManager()
     val expiredHeaders = runCatching {
       CookieManagerCompat.getCookieInfo(cookieManager, url)
         .mapNotNull(::androidScraperCookieExpiration)
@@ -1587,11 +1627,17 @@ class AndroidScraperBridge(
         }
         remaining -= 1
         if (remaining == 0) {
-          cookieManager.flush()
-          if (rejected) {
-            finishError(state, id, "scraper: one or more cookies could not be deleted")
-          } else {
-            finishSuccess(state, id, deleted)
+          val deletedCount = deleted
+          val anyRejected = rejected
+          AndroidSiteBrowserOwner.flushCookiesAsync {
+            mainHandler.post {
+              if (closed || state.activeAction?.id != id) return@post
+              if (anyRejected) {
+                finishError(state, id, "scraper: one or more cookies could not be deleted")
+              } else {
+                finishSuccess(state, id, deletedCount)
+              }
+            }
           }
         }
       }
@@ -1823,7 +1869,14 @@ class AndroidScraperBridge(
       state.pendingDocumentReady = null
       webView.stopLoading()
       webView.webViewClient = makeClient(state, null)
-      logState(state, "prepareContext timeout id=$id contextUrl=$contextUrl", contextUrl)
+      Log.w(
+        TAG,
+        singleLineLogMessage(
+          "[${state.key}] prepareContext timeout id=$id synthetic=$syntheticContext " +
+            "${rendererStatusForLog(webView)} contextUrl=${urlForLog(contextUrl)} " +
+            "webViewUrl=${urlForLog(webView.url)}",
+        ),
+      )
       finishError(state, id, "scraper: timed out preparing fetch context $contextUrl")
     }
     state.activeTimeout = timeout
@@ -2167,7 +2220,7 @@ class AndroidScraperBridge(
     }
     if (state.activeFetchId != id) return
     if (!isExpectedResultNonce(state, id, nonce)) return
-    state.webView?.let { profileCookieManager(it).flush() }
+    if (state.webView != null) AndroidSiteBrowserOwner.flushCookiesAsync()
     logState(state, "onFetchResult id=$id $logSummary")
     if (!result.optBoolean("success", false)) {
       finishError(state, id, result.optString("error", "unknown browser fetch error"))
@@ -2194,7 +2247,7 @@ class AndroidScraperBridge(
     if (id != null && id != activeId) return
     if (!isExpectedResultNonce(state, activeId, nonce.orEmpty())) return
     state.webView?.let { webView ->
-      profileCookieManager(webView).flush()
+      AndroidSiteBrowserOwner.flushCookiesAsync()
       webView.url?.let { recordVpnNavigationResponse(webView, it) }
     }
     logState(state, "onExtractResult id=$activeId payloadLength=${payload.length}")

@@ -15,7 +15,6 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.webkit.CookieManagerCompat
-import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.Closeable
@@ -145,9 +144,8 @@ class AndroidVpnSessionDeviceTest {
         options,
       )
       activityScenario.onActivity { activity ->
-        assertTrue(WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE))
         assertTrue(WebViewFeature.isFeatureSupported(WebViewFeature.GET_COOKIE_INFO))
-        cookies = ProfileStore.getInstance().getOrCreateProfile(sharedSiteBrowserProfileName()).cookieManager
+        cookies = CookieManager.getInstance()
         surface = FrameLayout(activity)
         host = WebView(activity)
         surface.addView(host, FrameLayout.LayoutParams(480, 800))

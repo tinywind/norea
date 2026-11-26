@@ -8,8 +8,8 @@ import java.security.MessageDigest
 private const val MAX_SAFE_WORKER_GENERATION = 9_007_199_254_740_991L
 internal const val MAX_VPN_DOWNLOAD_WORKERS = 10
 
-internal fun androidVpnWorkerCapabilities(apiLevel: Int, multiProfile: Boolean, proxyOverride: Boolean): Map<String, Any> {
-  val supported = apiLevel >= 28 && multiProfile && proxyOverride
+internal fun androidVpnWorkerCapabilities(apiLevel: Int, proxyOverride: Boolean): Map<String, Any> {
+  val supported = apiLevel >= 28 && proxyOverride
   return mapOf("supported" to supported, "parallelSupported" to false, "maxWorkers" to if (supported) 1 else 0)
 }
 

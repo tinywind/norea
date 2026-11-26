@@ -177,4 +177,21 @@ class AndroidScraperVpnSessionTest {
       ),
     )
   }
+
+  @Test
+  fun defaultSiteBrowserProfileMigratesLegacySharedProfileAndProtectsInternalAppHosts() {
+    assertEquals("Default", sharedSiteBrowserProfileName())
+    assertTrue(isAcceptedSiteBrowserProfileName(null))
+    assertTrue(isAcceptedSiteBrowserProfileName("Default"))
+    assertTrue(isAcceptedSiteBrowserProfileName(legacySharedSiteBrowserProfileName()))
+    assertFalse(isAcceptedSiteBrowserProfileName("norea-source-unexpected"))
+
+    assertTrue(isInternalAppBrowserHost("tauri.localhost"))
+    assertTrue(isInternalAppBrowserHost("TAURI.LOCALHOST"))
+    assertTrue(isInternalAppBrowserHost("asset.localhost"))
+    assertTrue(isInternalAppBrowserHost("norea-media.localhost"))
+    assertFalse(isInternalAppBrowserHost("017.bookkor.com"))
+    assertFalse(isInternalAppBrowserHost("127.0.0.1"))
+    assertFalse(isInternalAppBrowserHost(null))
+  }
 }

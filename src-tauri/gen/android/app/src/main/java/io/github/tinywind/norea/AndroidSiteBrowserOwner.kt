@@ -5,28 +5,40 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.webkit.CookieManager
+import android.webkit.ServiceWorkerClient
+import android.webkit.ServiceWorkerController
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebStorage
 import android.webkit.WebView
 import androidx.annotation.Keep
-import androidx.webkit.Profile
-import androidx.webkit.ProfileStore
-import android.webkit.ServiceWorkerClient
 import androidx.webkit.WebStorageCompat
 import androidx.webkit.WebViewFeature
 import java.io.ByteArrayInputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 
 internal const val SITE_BROWSER_FOREGROUND_OWNER = "foreground"
 private const val SITE_BROWSER_SESSION_PREFERENCES = "site-browser-session"
 private const val SITE_BROWSER_DIRECT_ROUTE = "direct"
+private const val SITE_BROWSER_DEFAULT_PROFILE = "Default"
 private const val SITE_BROWSER_TRANSITION_TIMEOUT_MS = 30_000L
+private val INTERNAL_APP_BROWSER_HOSTS = setOf("tauri.localhost", "asset.localhost", "norea-media.localhost")
 
-/** Every site browser uses the existing foreground Webtoon profile in the main process. */
-internal fun sharedSiteBrowserProfileName(): String = androidScraperProfileName("newtoki-webtoon")
+/** Every site browser shares WebView's default profile so it reuses the main UI renderer process. */
+internal fun sharedSiteBrowserProfileName(): String = SITE_BROWSER_DEFAULT_PROFILE
+
+internal fun legacySharedSiteBrowserProfileName(): String = androidScraperProfileName("newtoki-webtoon")
+
+internal fun isAcceptedSiteBrowserProfileName(adopted: String?): Boolean =
+  adopted == null || adopted == sharedSiteBrowserProfileName() || adopted == legacySharedSiteBrowserProfileName()
+
+internal fun isInternalAppBrowserHost(host: String?): Boolean =
+  host?.lowercase() in INTERNAL_APP_BROWSER_HOSTS
 
 internal fun siteBrowserProfileHash(value: Any?): String? {
   if (value == null || value === JSONObject.NULL) return null
@@ -55,6 +67,10 @@ internal object AndroidSiteBrowserOwner {
   private val io = Executors.newSingleThreadExecutor { task ->
     Thread(task, "NoreaSiteBrowserRoute").apply { isDaemon = true }
   }
+  private val cookieFlushExecutor = Executors.newSingleThreadExecutor { task ->
+    Thread(task, "NoreaCookieFlush").apply { isDaemon = true }
+  }
+  private val cookieFlushPending = AtomicBoolean(false)
   private val bridges = linkedMapOf<AndroidScraperBridge, String>()
   private val views = linkedMapOf<WebView, String>()
   private var context: Context? = null
@@ -83,18 +99,35 @@ internal object AndroidSiteBrowserOwner {
     this.context = context.applicationContext
     val preferences = preferences()
     val adopted = preferences.getString("profile", null)
-    check(adopted == null || adopted == sharedSiteBrowserProfileName()) { "The shared site profile identity is invalid." }
-    if (adopted == null) check(preferences.edit().putString("profile", sharedSiteBrowserProfileName()).commit()) {
-      "Could not preserve the shared site profile identity."
+    check(isAcceptedSiteBrowserProfileName(adopted)) { "The shared site profile identity is invalid." }
+    if (adopted != sharedSiteBrowserProfileName()) {
+      check(preferences.edit().putString("profile", sharedSiteBrowserProfileName()).commit()) {
+        "Could not preserve the shared site profile identity."
+      }
     }
-    if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) setServiceWorkerNetworkBlocked(true)
+    setServiceWorkerNetworkBlocked(true)
   }
 
-  fun profile(): Profile {
-    check(WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-      "Shared site browser data requires an updated Android System WebView."
+  fun cookieManager(): CookieManager = CookieManager.getInstance()
+
+  /** Persists cookies off the UI thread so synchronous Chromium DB waits cannot trigger ANRs. */
+  fun flushCookiesAsync(onComplete: (() -> Unit)? = null) {
+    if (onComplete == null) {
+      if (!cookieFlushPending.compareAndSet(false, true)) return
+      runCatching {
+        cookieFlushExecutor.execute {
+          cookieFlushPending.set(false)
+          runCatching { cookieManager().flush() }
+        }
+      }.onFailure { cookieFlushPending.set(false) }
+      return
     }
-    return ProfileStore.getInstance().getOrCreateProfile(sharedSiteBrowserProfileName())
+    runCatching {
+      cookieFlushExecutor.execute {
+        runCatching { cookieManager().flush() }
+        onComplete()
+      }
+    }.onFailure { onComplete() }
   }
 
   fun register(bridge: AndroidScraperBridge, owner: String, context: Context) {
@@ -243,8 +276,7 @@ internal object AndroidSiteBrowserOwner {
   }
 
   fun canResetSiteData(): Boolean =
-    WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE) &&
-      WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)
+    WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)
 
   fun resetSiteData(url: String, done: (Result<Unit>) -> Unit) {
     requireMainThread()
@@ -254,7 +286,7 @@ internal object AndroidSiteBrowserOwner {
       val origin = java.net.URI(url)
       require(origin.scheme?.lowercase() in setOf("http", "https") &&
         !origin.host.isNullOrBlank() && origin.rawUserInfo == null &&
-        origin.host.lowercase() !in setOf("tauri.localhost", "asset.localhost", "norea-media.localhost")) {
+        !isInternalAppBrowserHost(origin.host)) {
         "A source website address is required to reset its data."
       }
       check(bridges.keys.none { it.hasActiveSiteWork() }) { "Pause the active site browser task before resetting site data." }
@@ -283,12 +315,18 @@ internal object AndroidSiteBrowserOwner {
       handler.postDelayed(timeout, SITE_BROWSER_TRANSITION_TIMEOUT_MS)
       dataMutationInFlight = true
       runCatching {
-        WebStorageCompat.deleteBrowsingDataForSite(profile().webStorage, url) {
+        WebStorageCompat.deleteBrowsingDataForSite(WebStorage.getInstance(), url) {
           // A timeout reports failure but cannot cancel WebView's asynchronous deletion.
           // Do not reopen a route until this actual completion callback has arrived.
           dataMutationInFlight = false
           if (completed || epoch != transitionEpoch) return@deleteBrowsingDataForSite
-          finish(runCatching { profile().cookieManager.flush() })
+          io.execute {
+            val flushed = runCatching { cookieManager().flush() }
+            handler.post {
+              if (completed || epoch != transitionEpoch) return@post
+              finish(flushed)
+            }
+          }
         }
       }.onFailure {
         dataMutationInFlight = false
@@ -375,12 +413,14 @@ internal object AndroidSiteBrowserOwner {
         val afterCookies: () -> Unit = {
           if (!completed && epoch == transitionEpoch) {
             runCatching {
-              profile().cookieManager.flush()
               AndroidBrowserEnvironment.configure(checkNotNull(context), next.rotate, changed, identity)
             }.fold(
               onSuccess = {
                 io.execute {
-                  val configured = runCatching { configureAndroidVpnWebViewProxy(next.port) }
+                  val configured = runCatching {
+                    cookieManager().flush()
+                    configureAndroidVpnWebViewProxy(next.port)
+                  }
                   handler.post {
                     if (completed || epoch != transitionEpoch) return@post
                     configured.fold(
@@ -406,10 +446,10 @@ internal object AndroidSiteBrowserOwner {
         if (clearCookies) {
           dataMutationInFlight = true
           runCatching {
-            profile().cookieManager.removeAllCookies {
+            cookieManager().removeAllCookies {
               dataMutationInFlight = false
               if (!completed && epoch == transitionEpoch) {
-                if (profile().cookieManager.hasCookies()) finish(Result.failure(IllegalStateException("Site browser cookies could not be cleared.")))
+                if (cookieManager().hasCookies()) finish(Result.failure(IllegalStateException("Site browser cookies could not be cleared.")))
                 else afterCookies()
               }
             }
@@ -435,17 +475,12 @@ internal object AndroidSiteBrowserOwner {
   }
 
   private fun setServiceWorkerNetworkBlocked(blocked: Boolean) {
-    val controller = profile().serviceWorkerController
-    check(WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BLOCK_NETWORK_LOADS)) {
-      "Shared site browser routing requires service-worker network control."
-    }
+    val controller = ServiceWorkerController.getInstance()
     controller.serviceWorkerWebSettings.blockNetworkLoads = blocked
-    if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)) {
-      controller.setServiceWorkerClient(object : ServiceWorkerClient() {
-        override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? =
-          if (networkAllowed) null else blockedResponse()
-      })
-    }
+    controller.setServiceWorkerClient(object : ServiceWorkerClient() {
+      override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? =
+        if (isInternalAppBrowserHost(request.url?.host) || networkAllowed) null else blockedResponse()
+    })
   }
 
   private fun preferences() = checkNotNull(context).getSharedPreferences(SITE_BROWSER_SESSION_PREFERENCES, Context.MODE_PRIVATE)

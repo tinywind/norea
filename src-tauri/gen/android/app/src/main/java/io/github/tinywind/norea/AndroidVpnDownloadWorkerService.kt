@@ -15,7 +15,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
-import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 
 internal object AndroidVpnWorkerProcess {
@@ -225,7 +224,6 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
       json.optBoolean("rotateFingerprintOnVpnChange", false),
     )
     val appOrigin = androidVpnWorkerAppOrigin(json.opt("_appOrigin"))
-    check(WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) { "VPN workers require WebView multi-profile support." }
     lease.beginConfigure(configuration)
     cancelCalls("VPN worker reconfigured.", except = ticket)
     destroyBrowser()

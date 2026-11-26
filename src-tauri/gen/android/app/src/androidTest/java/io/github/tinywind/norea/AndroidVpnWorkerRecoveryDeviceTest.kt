@@ -128,7 +128,7 @@ class AndroidVpnWorkerRecoveryDeviceTest {
         val cookieOrigin = "https://worker-reconnect-fixture.invalid/"
         val cookieSet = CountDownLatch(1)
         instrumentation.runOnMainSync {
-          AndroidSiteBrowserOwner.profile().cookieManager.setCookie(cookieOrigin, "worker_reconnect_qa=retained; Path=/; Secure") { cookieSet.countDown() }
+          AndroidSiteBrowserOwner.cookieManager().setCookie(cookieOrigin, "worker_reconnect_qa=retained; Path=/; Secure") { cookieSet.countDown() }
         }
         assertTrue(cookieSet.await(10, TimeUnit.SECONDS))
         val environmentPreferences = context.getSharedPreferences("norea_shared_browser_environment", Context.MODE_PRIVATE)
@@ -171,7 +171,7 @@ class AndroidVpnWorkerRecoveryDeviceTest {
         assertSame(service, AndroidVpnWorkerProcess.service)
         instrumentation.runOnMainSync {
           assertTrue("Same-profile worker reconnect must retain cookies",
-            AndroidSiteBrowserOwner.profile().cookieManager.getCookie(cookieOrigin).orEmpty().contains("worker_reconnect_qa=retained"))
+            AndroidSiteBrowserOwner.cookieManager().getCookie(cookieOrigin).orEmpty().contains("worker_reconnect_qa=retained"))
         }
         assertTrue("Same-profile reconnect must retain its environment",
           originalEnvironment == environmentPreferences.getString("environment_v1", null))
@@ -183,7 +183,7 @@ class AndroidVpnWorkerRecoveryDeviceTest {
         instrumentation.runOnMainSync {
           assertFalse("Worker release must leave the browser quiesced until a real foreground operation",
             AndroidSiteBrowserOwner.canLoad(SITE_BROWSER_FOREGROUND_OWNER))
-          assertTrue(AndroidSiteBrowserOwner.profile().cookieManager.getCookie(cookieOrigin).orEmpty().contains("worker_reconnect_qa=retained"))
+          assertTrue(AndroidSiteBrowserOwner.cookieManager().getCookie(cookieOrigin).orEmpty().contains("worker_reconnect_qa=retained"))
         }
         assertTrue(originalEnvironment == environmentPreferences.getString("environment_v1", null))
         // Re-reading an unchanged foreground status is not an actual browser visit.
@@ -192,13 +192,13 @@ class AndroidVpnWorkerRecoveryDeviceTest {
           .put("rotateFingerprintOnVpnChange", true))
         instrumentation.runOnMainSync {
           assertFalse(AndroidSiteBrowserOwner.canLoad(SITE_BROWSER_FOREGROUND_OWNER))
-          assertTrue(AndroidSiteBrowserOwner.profile().cookieManager.getCookie(cookieOrigin).orEmpty().contains("worker_reconnect_qa=retained"))
+          assertTrue(AndroidSiteBrowserOwner.cookieManager().getCookie(cookieOrigin).orEmpty().contains("worker_reconnect_qa=retained"))
         }
         AndroidSiteBrowserDeviceFixture.prepareForeground()
         instrumentation.runOnMainSync {
           assertTrue(AndroidSiteBrowserOwner.canLoad(SITE_BROWSER_FOREGROUND_OWNER))
           assertFalse("The actual foreground route transition must expire the previous route's cookies",
-            AndroidSiteBrowserOwner.profile().cookieManager.getCookie(cookieOrigin).orEmpty().contains("worker_reconnect_qa="))
+            AndroidSiteBrowserOwner.cookieManager().getCookie(cookieOrigin).orEmpty().contains("worker_reconnect_qa="))
         }
         assertTrue("An actual foreground route change must rotate the enabled environment",
           originalEnvironment != environmentPreferences.getString("environment_v1", null))

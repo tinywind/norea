@@ -68,10 +68,9 @@ internal class AndroidVpnDownloadWorkers(
     val result = runCatching {
       androidVpnWorkerCapabilities(
         api,
-        api >= 28 && WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE),
         api >= 28 && WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE),
       )
-    }.getOrElse { androidVpnWorkerCapabilities(api, false, false) }
+    }.getOrElse { androidVpnWorkerCapabilities(api, false) }
     return JSONObject(result).toString()
   }
 

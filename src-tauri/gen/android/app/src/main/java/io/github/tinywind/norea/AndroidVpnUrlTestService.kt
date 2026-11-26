@@ -23,8 +23,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 
 private const val TAG = "NoreaVpnUrlTest"
@@ -184,8 +182,10 @@ private class AndroidVpnUrlTestPage(
   @SuppressLint("SetJavaScriptEnabled")
   fun start() {
     val view = WebView(context)
-    WebViewCompat.setProfile(view, sharedSiteBrowserProfileName())
     webView = view
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      view.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+    }
     view.settings.apply {
       javaScriptEnabled = true
       domStorageEnabled = true
