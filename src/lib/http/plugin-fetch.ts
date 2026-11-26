@@ -1,8 +1,13 @@
 import { isAbortError } from "../abort";
 import { withNetworkRequest } from "../network";
 import { normalizeSourceAccessRequiredError } from "../plugins/source-access";
-import { waitForPluginVpnReady } from "../plugin-vpn-traffic";
+import { checkPluginVpnHealth } from "../plugin-vpn";
+import {
+  getLastReadyPluginVpnProfileHash,
+  waitForPluginVpnReady,
+} from "../plugin-vpn-traffic";
 import { androidWebviewFetch } from "../android-scraper";
+import { usePluginVpnStore } from "../../store/plugin-vpn";
 import {
   activeScraperExecutor,
   activeScraperExecutorSignal,
@@ -20,6 +25,14 @@ import {
 } from "./scraper-transport";
 import { type FetchResultWire, type PluginHttpInit } from "./types";
 
+const RETRYABLE_VPN_TUNNEL_FAILURE =
+  /ERR_TUNNEL_CONNECTION_FAILED|VPN DNS lookup timed out|VPN TCP connection(?: attempt)? timed out|VPN tunnel stopped carrying traffic|plugin VPN connection is (?:unavailable|starting|stopping|switching|reconnecting)/i;
+
+function isRetryableVpnTunnelFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return RETRYABLE_VPN_TUNNEL_FAILURE.test(message);
+}
+
 async function pluginFetchInternal(
   url: string,
   init: PluginHttpInit = {},
@@ -32,44 +45,69 @@ async function pluginFetchInternal(
     init.scraperExecutor ?? activeScraperExecutor(init.sourceId);
   const signal = init.signal ?? activeScraperExecutorSignal(scraperExecutor);
   const timeoutMs = requestTimeoutMs(init.timeoutMs);
-  let result: FetchResultWire;
-  await waitForPluginVpnReady(signal, init.vpnReadyDeadline, scraperExecutor);
-  try {
-    result = isAndroidRuntime()
-      ? await androidWebviewFetch(
-          url,
-          wireInit,
-          contextUrl,
-          userAgent,
-          init.sourceId,
+  const canRecoverForegroundVpn =
+    !scraperExecutor?.startsWith("vpn:") &&
+    typeof checkPluginVpnHealth === "function";
+  let result!: FetchResultWire;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await waitForPluginVpnReady(signal, init.vpnReadyDeadline, scraperExecutor);
+    const profileHashBefore = getLastReadyPluginVpnProfileHash();
+    try {
+      result = isAndroidRuntime()
+        ? await androidWebviewFetch(
+            url,
+            wireInit,
+            contextUrl,
+            userAgent,
+            init.sourceId,
+            scraperExecutor,
+            timeoutMs,
+            signal,
+            init.priority,
+          )
+        : await desktopWebviewFetch({
+            url,
+            init: wireInit,
+            contextUrl,
+            userAgent,
+            sourceId: init.sourceId,
+            scraperExecutor,
+            timeoutMs,
+            signal,
+            priority: init.priority,
+            ownerSignal,
+          });
+      break;
+    } catch (error) {
+      if (
+        attempt === 0 &&
+        canRecoverForegroundVpn &&
+        !isAbortError(error) &&
+        !signal?.aborted &&
+        usePluginVpnStore.getState().enabled &&
+        isRetryableVpnTunnelFailure(error)
+      ) {
+        const checked = await checkPluginVpnHealth(true).catch(() => null);
+        const switchedProfile =
+          checked?.phase === "connected" &&
+          profileHashBefore !== null &&
+          checked.profile?.hash !== undefined &&
+          checked.profile.hash !== profileHashBefore;
+        if (checked && (checked.phase !== "connected" || switchedProfile) && !signal?.aborted) {
+          continue;
+        }
+      }
+      if (!isAbortError(error)) {
+        console.error("[plugin-fetch] failed", {
+          contextUrl: contextUrl ? redactUrlForLog(contextUrl) : null,
+          error: fetchErrorMessage(error),
           scraperExecutor,
-          timeoutMs,
-          signal,
-          init.priority,
-        )
-      : await desktopWebviewFetch({
-          url,
-          init: wireInit,
-          contextUrl,
-          userAgent,
           sourceId: init.sourceId,
-          scraperExecutor,
-          timeoutMs,
-          signal,
-          priority: init.priority,
-          ownerSignal,
+          url: redactUrlForLog(url),
         });
-  } catch (error) {
-    if (!isAbortError(error)) {
-      console.error("[plugin-fetch] failed", {
-        contextUrl: contextUrl ? redactUrlForLog(contextUrl) : null,
-        error: fetchErrorMessage(error),
-        scraperExecutor,
-        sourceId: init.sourceId,
-        url: redactUrlForLog(url),
-      });
+      }
+      throw normalizeSourceAccessRequiredError(error, sourceAccessFallbackUrl(url, init)) ?? error;
     }
-    throw normalizeSourceAccessRequiredError(error, sourceAccessFallbackUrl(url, init)) ?? error;
   }
   return checkedResponseFromWire(
     result,

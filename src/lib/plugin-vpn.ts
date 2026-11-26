@@ -177,6 +177,10 @@ export function getPluginVpnStatus(): Promise<PluginVpnStatus> {
   return invoke<PluginVpnStatus>("plugin_vpn_status");
 }
 
+export function checkPluginVpnHealth(force = false): Promise<PluginVpnStatus> {
+  return invoke<PluginVpnStatus>("plugin_vpn_check_health", { force });
+}
+
 export function startPluginVpnStatusListener(
   onEvent: (event: PluginVpnStatusEvent) => void,
 ): Promise<UnlistenFn> {

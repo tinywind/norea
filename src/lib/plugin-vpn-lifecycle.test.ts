@@ -4,6 +4,7 @@ const recovery = vi.hoisted(() => ({ stopped: false }));
 
 vi.mock("./plugin-vpn", async (importOriginal) => ({
   ...await importOriginal<typeof import("./plugin-vpn")>(),
+  checkPluginVpnHealth: vi.fn(),
   getPluginVpnStatus: vi.fn(),
   isPluginVpnRecoveryStopped: () => recovery.stopped,
   releasePluginVpnRecoveryProfile: vi.fn(),
@@ -16,6 +17,7 @@ vi.mock("./plugin-vpn", async (importOriginal) => ({
 vi.mock("./plugin-vpn-profiles", () => ({ listSavedPluginVpnProfiles: vi.fn() }));
 
 import {
+  checkPluginVpnHealth,
   getPluginVpnStatus,
   recordPluginVpnProfileSuccess,
   releasePluginVpnRecoveryProfile,
@@ -36,6 +38,7 @@ import { useNetworkStore } from "./network";
 import { usePluginVpnStore } from "../store/plugin-vpn";
 
 const restoreMock = vi.mocked(restorePluginVpnConnection);
+const checkHealthMock = vi.mocked(checkPluginVpnHealth);
 const statusListenerMock = vi.mocked(startPluginVpnStatusListener);
 const statusMock = vi.mocked(getPluginVpnStatus);
 const replaceMock = vi.mocked(replacePluginVpnRecoveryProfile);
@@ -70,6 +73,7 @@ describe("plugin VPN app lifecycle", () => {
     vi.stubGlobal("document", documentTarget);
     vi.stubGlobal("window", new EventTarget());
     restoreMock.mockReset().mockResolvedValue(null);
+    checkHealthMock.mockReset().mockResolvedValue(CONNECTED_STATUS);
     recovery.stopped = false;
     statusMock.mockReset().mockRejectedValue(new Error("status unavailable"));
     replaceMock.mockReset().mockResolvedValue(true);
@@ -401,7 +405,53 @@ describe("plugin VPN app lifecycle", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(replaceMock.mock.calls).toEqual([[third], [second]]);
       expect(restoreMock).toHaveBeenCalledTimes(3);
-      expect(onError).toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("skips dead connect-time zombie servers immediately without 3x retry backoff", async () => {
+      vi.useFakeTimers();
+      const first = saved("a", 1);
+      const second = saved("b", 2);
+      const third = saved("c", 3);
+      const zombieConnectError = new Error(
+        "VPN tunnel stopped carrying traffic (consecutive DNS/TCP timeouts): liveness probe timed out",
+      );
+      vaultMock.mockResolvedValue({ limit: 20, profiles: [first, second, third], cleanupError: null });
+      statusMock.mockResolvedValue(statusFor(first));
+      replaceMock
+        .mockImplementationOnce(async () => {
+          statusMock.mockResolvedValue(statusFor(third));
+          return true;
+        })
+        .mockImplementationOnce(async () => {
+          statusMock.mockResolvedValue(statusFor(second));
+          return true;
+        });
+      restoreMock
+        .mockRejectedValueOnce(zombieConnectError)
+        .mockRejectedValueOnce(zombieConnectError)
+        .mockResolvedValueOnce({
+          ...CONNECTED_STATUS,
+          profile: { ...CONNECTED_STATUS.profile!, hash: second.hash, remoteHost: second.ip },
+        });
+      const onRestored = vi.fn();
+      const onError = vi.fn();
+      stop = startPluginVpnLifecycle({ onRestored, onError, onStopped: vi.fn() });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(replaceMock.mock.calls).toEqual([[third], [second]]);
+      expect(restoreMock).toHaveBeenCalledTimes(3);
+      expect(onRestored).toHaveBeenCalledOnce();
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("checks stale tunnel health when resuming an already-connected session", async () => {
+      stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError: vi.fn() });
+      await Promise.resolve();
+      expect(checkHealthMock).toHaveBeenCalledTimes(1);
+
+      window.dispatchEvent(new Event("norea-app-resumed"));
+      await Promise.resolve();
+      expect(checkHealthMock).toHaveBeenCalledTimes(2);
     });
   });
 

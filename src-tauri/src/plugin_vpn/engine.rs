@@ -2,6 +2,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, RwLock},
+    time::Duration,
 };
 
 use openvpn_connect::{
@@ -15,7 +16,10 @@ use tokio::{
 };
 
 use super::{
-    netstack::{PacketSink, UserSpaceNetwork},
+    netstack::{
+        CONNECT_LIVENESS_PROBE_TIMEOUT, PacketSink, TunnelHealthHandle, UserSpaceNetwork,
+        ZOMBIE_TUNNEL_ERROR,
+    },
     proxy::{ConnectFuture, ProxyConnector, ProxyTarget},
     tunnel_config::{parse_tunnel_configuration, TunnelConfiguration},
 };
@@ -42,6 +46,7 @@ pub(super) enum EngineLifecycle {
 #[derive(Clone)]
 pub(super) struct EngineControl {
     handle: SessionHandle,
+    tun: Arc<NoreaExternalTun>,
 }
 
 impl EngineControl {
@@ -54,6 +59,14 @@ impl EngineControl {
 
     pub(super) fn cancel(&self) {
         self.handle.cancel();
+    }
+
+    pub(super) async fn check_health(&self, max_idle: Option<Duration>) -> Result<bool, String> {
+        let Some(health) = self.tun.health_handle() else {
+            return Ok(false);
+        };
+        health.check_health(max_idle).await?;
+        Ok(true)
     }
 }
 
@@ -182,6 +195,7 @@ pub(super) async fn connect(
 ) -> Result<EngineConnection, String> {
     let mut network = crate::network::subscribe();
     crate::network::require_online()?;
+    let is_vpn_gate = super::is_vpn_gate_finder_profile(&profile);
     let runtime = Handle::current();
     let (events, mut event_receiver) = mpsc::unbounded_channel();
     let connector = Arc::new(SwitchingConnector::new());
@@ -189,6 +203,7 @@ pub(super) async fn connect(
         runtime,
         events.clone(),
         connector.clone(),
+        is_vpn_gate,
     ));
     let client = Client::builder()
         .handler(NoreaEventHandler {
@@ -271,6 +286,7 @@ pub(super) async fn connect(
         .map_err(|error| format!("could not start OpenVPN: {error}"))?;
     let control = EngineControl {
         handle: session.handle(),
+        tun: tun.clone(),
     };
     let mut session = Box::pin(session);
     if cancellation_requested(&cancellation) {
@@ -326,6 +342,55 @@ pub(super) async fn connect(
         control.cancel();
         let _ = session.await;
         return Err("OpenVPN connection was cancelled".to_string());
+    }
+    if is_vpn_gate {
+        let Some(health) = tun.health_handle() else {
+            control.cancel();
+            let _ = session.await;
+            return Err(format!("{ZOMBIE_TUNNEL_ERROR}: tunnel network stack is unavailable"));
+        };
+        let probe = health.probe_liveness(CONNECT_LIVENESS_PROBE_TIMEOUT);
+        tokio::pin!(probe);
+        loop {
+            tokio::select! {
+                biased;
+                _ = network.changed() => {
+                    control.cancel();
+                    let _ = session.await;
+                    return Err("Internet connection changed while verifying OpenVPN tunnel".to_string());
+                }
+                () = wait_for_cancellation(&mut cancellation) => {
+                    control.cancel();
+                    let _ = session.await;
+                    return Err("OpenVPN connection was cancelled".to_string());
+                }
+                result = &mut session => {
+                    return Err(session_result(result));
+                }
+                event = event_receiver.recv() => match event {
+                    Some(EngineEvent::Failure(error) | EngineEvent::TunnelFailure(error)) => {
+                        control.cancel();
+                        let _ = session.await;
+                        return Err(error);
+                    }
+                    Some(_) => {}
+                    None => {
+                        control.cancel();
+                        let _ = session.await;
+                        return Err("OpenVPN event channel closed while verifying tunnel".to_string());
+                    }
+                },
+                result = &mut probe => match result {
+                    Ok(()) => break,
+                    Err(detail) => {
+                        log::warn!("plugin VPN connect data-plane probe failed: {detail}");
+                        control.cancel();
+                        let _ = session.await;
+                        return Err(format!("{ZOMBIE_TUNNEL_ERROR}: {detail}"));
+                    }
+                },
+            }
+        }
     }
 
     let completion_control = control.clone();
@@ -482,6 +547,7 @@ struct NoreaExternalTun {
     runtime: Handle,
     events: mpsc::UnboundedSender<EngineEvent>,
     connector: Arc<SwitchingConnector>,
+    active_liveness_probe: bool,
     state: std::sync::Mutex<TunState>,
 }
 
@@ -489,6 +555,7 @@ struct TunState {
     generation: u64,
     configured_mtu: i32,
     network: Option<UserSpaceNetwork>,
+    health: Option<TunnelHealthHandle>,
     io: Option<ExternalTunIo>,
     info: ExternalTunInfo,
 }
@@ -498,19 +565,30 @@ impl NoreaExternalTun {
         runtime: Handle,
         events: mpsc::UnboundedSender<EngineEvent>,
         connector: Arc<SwitchingConnector>,
+        active_liveness_probe: bool,
     ) -> Self {
         Self {
             runtime,
             events,
             connector,
+            active_liveness_probe,
             state: std::sync::Mutex::new(TunState {
                 generation: 0,
                 configured_mtu: 0,
                 network: None,
+                health: None,
                 io: None,
                 info: ExternalTunInfo::default(),
             }),
         }
+    }
+
+    fn health_handle(&self) -> Option<TunnelHealthHandle> {
+        self.state
+            .lock()
+            .expect("OpenVPN tunnel state lock")
+            .health
+            .clone()
     }
 
     fn fail(&self, generation: u64, io: &ExternalTunIo, message: String) {
@@ -529,6 +607,7 @@ impl NoreaExternalTun {
             state.generation = generation;
             state.io = None;
             state.info = ExternalTunInfo::default();
+            state.health = None;
             state.network.take()
         };
         if let Some(network) = network {
@@ -547,6 +626,7 @@ impl NoreaExternalTun {
             }
             state.io = None;
             state.info = ExternalTunInfo::default();
+            state.health = None;
             state.network.take()
         };
         if let Some(network) = network {
@@ -590,9 +670,10 @@ impl ExternalTun for NoreaExternalTun {
             &self.runtime,
             configuration,
             sink,
+            self.active_liveness_probe,
             Arc::new(move |error| {
                 if failure_connector.clear_if_current(generation) {
-                    let event = if error == super::netstack::ZOMBIE_TUNNEL_ERROR {
+                    let event = if error == ZOMBIE_TUNNEL_ERROR {
                         EngineEvent::TunnelFailure(error.clone())
                     } else {
                         EngineEvent::TunnelInterrupted(error.clone())
@@ -609,12 +690,14 @@ impl ExternalTun for NoreaExternalTun {
             }
         };
         let connector = network.connector();
+        let health = network.health_handle();
         let mut network = Some(network);
         {
             let mut state = self.state.lock().expect("OpenVPN tunnel state lock");
             if state.generation == generation {
                 state.info = info;
                 state.io = Some(io.clone());
+                state.health = Some(health);
                 state.network = network.take();
             }
         }

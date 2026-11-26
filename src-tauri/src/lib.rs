@@ -501,6 +501,7 @@ pub fn run() {
             plugin_vpn::state::plugin_vpn_import_profile,
             plugin_vpn::state::plugin_vpn_remove_profile,
             plugin_vpn::state::plugin_vpn_status,
+            plugin_vpn::state::plugin_vpn_check_health,
             plugin_vpn::state::plugin_vpn_transport_cursor,
             plugin_vpn::state::plugin_vpn_transport_failure,
             scraper::scraper_reset_vpn_session,

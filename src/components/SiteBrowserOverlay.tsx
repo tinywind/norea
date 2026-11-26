@@ -13,10 +13,12 @@ import { registerPageBackNavigationHandler } from "../lib/android-back-navigatio
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { sourceAccessChallengeTitleKey } from "../lib/plugins/source-access";
 import { isAbortError } from "../lib/abort";
+import { waitForPluginVpnReady } from "../lib/plugin-vpn-traffic";
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { cancelSourceAccessWait } from "../lib/tasks/source-access-coordinator";
 import { redactUrlForLog, redactUrlsForLog } from "../lib/url-log";
 import { useSiteBrowserStore } from "../store/site-browser";
+import { usePluginVpnStore } from "../store/plugin-vpn";
 import "../styles/site-browser.css";
 
 const BOUNDS_RESYNC_DELAYS_MS = [100, 500, 1000, 2000] as const;
@@ -317,6 +319,10 @@ export function SiteBrowserOverlay() {
       setLoading(true);
       void (async () => {
         try {
+          if (usePluginVpnStore.getState().enabled) {
+            await waitForPluginVpnReady(controller.signal);
+            if (controller.signal.aborted) return;
+          }
           await platform.navigate(sourceId, currentUrl, {
             signal: controller.signal,
             forceNavigation,

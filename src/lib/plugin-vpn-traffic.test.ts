@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./plugin-vpn", async (importOriginal) => ({
-  ...await importOriginal<typeof import("./plugin-vpn")>(), getPluginVpnStatus: vi.fn(),
+  ...await importOriginal<typeof import("./plugin-vpn")>(),
+  checkPluginVpnHealth: vi.fn(),
+  getPluginVpnStatus: vi.fn(),
 }));
 vi.mock("./plugin-vpn-lifecycle", () => ({ requestPluginVpnRecovery: vi.fn() }));
 
 import { usePluginVpnStore } from "../store/plugin-vpn";
-import { getPluginVpnStatus, type PluginVpnStatus } from "./plugin-vpn";
+import { checkPluginVpnHealth, getPluginVpnStatus, type PluginVpnStatus } from "./plugin-vpn";
 import { requestPluginVpnRecovery } from "./plugin-vpn-lifecycle";
 import { useNetworkStore, NetworkUnavailableError } from "./network";
 import {
@@ -16,6 +18,7 @@ import {
 } from "./plugin-vpn-traffic";
 
 const statusMock = vi.mocked(getPluginVpnStatus);
+const healthMock = vi.mocked(checkPluginVpnHealth);
 const recoveryMock = vi.mocked(requestPluginVpnRecovery);
 const CONNECTED: PluginVpnStatus = {
   phase: "connected", error: null, proxyPort: 43127, supported: true,
@@ -29,6 +32,7 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   usePluginVpnStore.getState().setEnabled(true);
   statusMock.mockReset().mockResolvedValue(RECONNECTING);
+  healthMock.mockReset().mockResolvedValue(CONNECTED);
   recoveryMock.mockReset();
 });
 afterEach(() => {
@@ -177,6 +181,35 @@ describe("plugin VPN traffic readiness", () => {
       expect(vi.getTimerCount()).toBe(0);
     },
   );
+
+  it("waits for failover when stale health check detects an unresponsive connected tunnel", async () => {
+    const failed: PluginVpnStatus = {
+      ...CONNECTED,
+      phase: "error",
+      error: "VPN tunnel stopped carrying traffic (consecutive DNS/TCP timeouts)",
+    };
+    const replacement: PluginVpnStatus = {
+      ...CONNECTED,
+      profile: { ...CONNECTED.profile!, hash: "b".repeat(64), remoteHost: "203.0.113.2" },
+    };
+    statusMock
+      .mockResolvedValueOnce(CONNECTED)
+      .mockResolvedValueOnce(RECONNECTING)
+      .mockResolvedValueOnce(replacement);
+    healthMock.mockResolvedValueOnce(failed);
+
+    const settled = vi.fn();
+    const pending = waitForPluginVpnReady().then(settled);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).not.toHaveBeenCalled();
+    expect(healthMock).toHaveBeenCalledTimes(1);
+    expect(recoveryMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await pending;
+    expect(settled).toHaveBeenCalledExactlyOnceWith(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 
   it("does not treat a failed status lookup as permission to fetch directly", async () => {
     statusMock.mockRejectedValue(new Error("bridge unavailable"));

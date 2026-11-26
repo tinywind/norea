@@ -1,7 +1,12 @@
 import { usePluginVpnStore } from "../store/plugin-vpn";
 import { requestAbortedError } from "./abort";
 import { requireNetworkOnline, isNetworkOnline, NetworkUnavailableError, useNetworkStore } from "./network";
-import { getPluginVpnStatus, isPluginVpnRecoveryStopped, isRetryablePluginVpnError } from "./plugin-vpn";
+import {
+  checkPluginVpnHealth,
+  getPluginVpnStatus,
+  isPluginVpnRecoveryStopped,
+  isRetryablePluginVpnError,
+} from "./plugin-vpn";
 import { requestPluginVpnRecovery } from "./plugin-vpn-lifecycle";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
 import { getVpnDownloadWorkerContext } from "./tasks/vpn-worker-context";
@@ -10,6 +15,11 @@ import { isAndroidRuntime } from "./tauri-runtime";
 
 export const PLUGIN_VPN_READY_TIMEOUT_MS = 120_000;
 const PLUGIN_VPN_STATUS_POLL_MS = 500;
+let lastReadyProfileHash: string | null = null;
+
+export function getLastReadyPluginVpnProfileHash(): string | null {
+  return lastReadyProfileHash;
+}
 
 export class PluginVpnUnavailableError extends Error {
   readonly code = "plugin-vpn-unavailable" as const;
@@ -44,6 +54,7 @@ export function waitForPluginVpnReady(
   return new Promise<boolean>((resolve, reject) => {
     let active = true;
     let waited = false;
+    let healthChecked = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let unsubscribe: (() => void) | undefined;
     let unsubscribeNetwork: (() => void) | undefined;
@@ -83,10 +94,46 @@ export function waitForPluginVpnReady(
         const status = await getPluginVpnStatus();
         if (!active) return;
         if (!usePluginVpnStore.getState().enabled) {
+          lastReadyProfileHash = null;
           finish();
           return;
         }
         if (status.supported && status.phase === "connected") {
+          if (
+            !healthChecked &&
+            status.profile?.isVpnGateFinder &&
+            typeof checkPluginVpnHealth === "function"
+          ) {
+            healthChecked = true;
+            const checked = await checkPluginVpnHealth().catch(() => status);
+            if (!active) return;
+            if (!usePluginVpnStore.getState().enabled) {
+              finish();
+              return;
+            }
+            if (checked.supported && checked.phase === "connected") {
+              lastReadyProfileHash = checked.profile?.hash ?? null;
+              finish();
+              return;
+            }
+            if (!checked.supported || !checked.profile) {
+              fail(new PluginVpnUnavailableError(false));
+              return;
+            }
+            if (checked.error && !isRetryablePluginVpnError(checked.error)) {
+              fail(new PluginVpnUnavailableError(false));
+              return;
+            }
+            if (Date.now() >= deadline) {
+              fail(new PluginVpnUnavailableError());
+              return;
+            }
+            waited = true;
+            requestPluginVpnRecovery();
+            if (active) pollTimer = setTimeout(() => void poll(), PLUGIN_VPN_STATUS_POLL_MS);
+            return;
+          }
+          lastReadyProfileHash = status.profile?.hash ?? null;
           finish();
           return;
         }

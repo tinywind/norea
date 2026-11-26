@@ -308,6 +308,18 @@ impl ProxyRouter {
         let connector = match &accepted.route {
             ProxyRoute::Direct => Arc::new(DirectConnector) as Arc<dyn ProxyConnector>,
             ProxyRoute::Blocked(reason) => {
+                if is_suppressed_tunnel_noise_host(&target.host) {
+                    log::debug!(
+                        "plugin VPN proxy suppressed Chromium autofill request while blocked route={} request={} target={}:{}",
+                        accepted.generation,
+                        accepted.request_id,
+                        normalized_host(&target.host),
+                        target.port,
+                    );
+                    return Err(ProxyConnectError::proxy(
+                        "suppressed Chromium autofill request",
+                    ));
+                }
                 let error = ProxyConnectError::tunnel(reason.clone());
                 self.record_failure(accepted, target, &error);
                 return Err(error);

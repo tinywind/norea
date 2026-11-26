@@ -22,9 +22,9 @@ beforeEach(() => {
   usePluginVpnStore.getState().setEnabled(true);
   phase = "reconnecting";
   invokeMock.mockReset().mockImplementation(async (command) => {
-    if (command === "plugin_vpn_status") return {
+    if (command === "plugin_vpn_status" || command === "plugin_vpn_check_health") return {
       phase, error: null, proxyPort: 43127, supported: true,
-      profile: { isVpnGateFinder: true, remoteHost: "203.0.113.1", requiresUsernamePassword: false },
+      profile: { hash: "a".repeat(64), isVpnGateFinder: true, remoteHost: "203.0.113.1", requiresUsernamePassword: false },
     };
     if (command === "webview_fetch") return {
       status: 200, statusText: "OK", headers: { "content-type": "text/plain" },
@@ -71,6 +71,71 @@ describe("source HTTP VPN boundary", () => {
     controller.abort();
     await expect(request).rejects.toMatchObject({ name: "AbortError" });
     expect(invokeMock.mock.calls.every(([command]) => command === "plugin_vpn_status")).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retries once after forced health check detects a mid-session zombie tunnel and failover connects", async () => {
+    phase = "connected";
+    let fetchCalls = 0;
+    let activeHash = "a".repeat(64);
+    invokeMock.mockReset().mockImplementation(async (command, args) => {
+      if (command === "plugin_vpn_status") {
+        return {
+          phase,
+          error: null,
+          proxyPort: 43127,
+          supported: true,
+          profile: { hash: activeHash, isVpnGateFinder: true, remoteHost: "203.0.113.1", requiresUsernamePassword: false },
+        };
+      }
+      if (command === "plugin_vpn_check_health") {
+        const force = (args as { force?: boolean } | undefined)?.force ?? false;
+        if (force) {
+          phase = "error";
+          return {
+            phase: "error",
+            error: "VPN tunnel stopped carrying traffic (consecutive DNS/TCP timeouts)",
+            proxyPort: 43127,
+            supported: true,
+            profile: { hash: activeHash, isVpnGateFinder: true, remoteHost: "203.0.113.1", requiresUsernamePassword: false },
+          };
+        }
+        return {
+          phase,
+          error: null,
+          proxyPort: 43127,
+          supported: true,
+          profile: { hash: activeHash, isVpnGateFinder: true, remoteHost: "203.0.113.1", requiresUsernamePassword: false },
+        };
+      }
+      if (command === "webview_fetch") {
+        fetchCalls += 1;
+        if (fetchCalls === 1) {
+          throw new Error("VPN DNS failure observed for source.test:443: VPN DNS lookup timed out");
+        }
+        return {
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "text/plain" },
+          bodyBase64: btoa("recovered"),
+          finalUrl: "https://source.test/",
+        };
+      }
+      throw new Error(`Unexpected native call: ${command}`);
+    });
+
+    const request = pluginFetch("https://source.test/", {
+      sourceId: "fixture-source",
+      scraperExecutor: "pool:0",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchCalls).toBe(1);
+
+    activeHash = "b".repeat(64);
+    phase = "connected";
+    await vi.advanceTimersByTimeAsync(500);
+    expect(await (await request).text()).toBe("recovered");
+    expect(fetchCalls).toBe(2);
     expect(vi.getTimerCount()).toBe(0);
   });
 

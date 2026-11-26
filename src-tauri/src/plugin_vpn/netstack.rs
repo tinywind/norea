@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     net::{IpAddr, SocketAddr},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant as StdInstant},
@@ -51,14 +51,67 @@ const MAX_TIMER_DELAY: Duration = Duration::from_millis(100);
 const ZOMBIE_TUNNEL_TIMEOUT_THRESHOLD: u32 = 3;
 pub(super) const ZOMBIE_TUNNEL_ERROR: &str =
     "VPN tunnel stopped carrying traffic (consecutive DNS/TCP timeouts)";
+pub(super) const CONNECT_LIVENESS_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const TUNNEL_LIVENESS_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+const LIVENESS_PROBE_HEDGE_DELAY: Duration = Duration::from_millis(1_500);
+const LIVENESS_PROBE_TARGETS: &[(&str, u16)] = &[
+    ("one.one.one.one", 443),
+    ("dns.google", 443),
+];
 
 pub(super) trait PacketSink: Send + Sync + 'static {
     fn send(&self, packet: &[u8]) -> bool;
 }
 
+#[derive(Clone)]
+pub(super) struct TunnelHealthHandle {
+    commands: mpsc::Sender<Command>,
+    started_at: StdInstant,
+    last_liveness_ms: Arc<AtomicU64>,
+    probe_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl TunnelHealthHandle {
+    pub(super) fn last_liveness_elapsed(&self) -> Duration {
+        let recorded = Duration::from_millis(self.last_liveness_ms.load(Ordering::Acquire));
+        self.started_at.elapsed().saturating_sub(recorded)
+    }
+
+    pub(super) async fn probe_liveness(&self, timeout: Duration) -> Result<(), String> {
+        probe_tunnel_liveness_via_commands(&self.commands, timeout).await
+    }
+
+    pub(super) async fn check_health(&self, max_idle: Option<Duration>) -> Result<(), String> {
+        if let Some(limit) = max_idle {
+            if self.last_liveness_elapsed() < limit {
+                return Ok(());
+            }
+        }
+        let _guard = self.probe_lock.lock().await;
+        if let Some(limit) = max_idle {
+            if self.last_liveness_elapsed() < limit {
+                return Ok(());
+            }
+        }
+        match probe_tunnel_liveness_via_commands(&self.commands, TUNNEL_LIVENESS_PROBE_TIMEOUT).await {
+            Ok(()) => Ok(()),
+            Err(detail) => {
+                let _ = self
+                    .commands
+                    .send(Command::FailZombie {
+                        reason: format!("health probe failed: {detail}"),
+                    })
+                    .await;
+                Err(ZOMBIE_TUNNEL_ERROR.to_string())
+            }
+        }
+    }
+}
+
 pub(super) struct UserSpaceNetwork {
     inbound: mpsc::Sender<Vec<u8>>,
     connector: Arc<TunnelConnector>,
+    health: TunnelHealthHandle,
     task: JoinHandle<()>,
 }
 
@@ -67,25 +120,38 @@ impl UserSpaceNetwork {
         runtime: &Handle,
         configuration: TunnelConfiguration,
         sink: Arc<dyn PacketSink>,
+        active_liveness_probe: bool,
         failure: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Result<Self, String> {
         let (commands, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (inbound, inbound_receiver) = mpsc::channel(INBOUND_PACKET_CAPACITY);
+        let started_at = StdInstant::now();
+        let last_liveness_ms = Arc::new(AtomicU64::new(0));
         let stack = Netstack::new(
             configuration,
             sink,
             commands.clone(),
             command_receiver,
             inbound_receiver,
+            started_at,
+            last_liveness_ms.clone(),
+            active_liveness_probe,
         )?;
         let task = runtime.spawn(async move {
             if let Err(error) = stack.run().await {
                 failure(error);
             }
         });
+        let health = TunnelHealthHandle {
+            commands: commands.clone(),
+            started_at,
+            last_liveness_ms,
+            probe_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
         Ok(Self {
             inbound,
             connector: Arc::new(TunnelConnector { commands }),
+            health,
             task,
         })
     }
@@ -100,8 +166,101 @@ impl UserSpaceNetwork {
         self.connector.clone()
     }
 
+    pub(super) fn health_handle(&self) -> TunnelHealthHandle {
+        self.health.clone()
+    }
+
     pub(super) fn stop(self) {
         self.task.abort();
+    }
+}
+
+struct ProbeFlagGuard(Arc<AtomicBool>);
+
+impl Drop for ProbeFlagGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+async fn probe_single_target(
+    commands: &mpsc::Sender<Command>,
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<(), String> {
+    let (reply, response) = oneshot::channel();
+    commands
+        .send(Command::Probe {
+            host: host.to_string(),
+            port,
+            timeout,
+            reply,
+        })
+        .await
+        .map_err(|_| "VPN network stack is not running".to_string())?;
+    let result = tokio::time::timeout(timeout + Duration::from_millis(250), response)
+        .await
+        .map_err(|_| format!("liveness probe to {host}:{port} timed out"))?
+        .map_err(|_| "VPN network stack stopped during liveness probe".to_string())?;
+    match result {
+        Ok(_stream) => Ok(()),
+        Err(error) => Err(format!("liveness probe to {host}:{port} failed: {}", error.message)),
+    }
+}
+
+async fn probe_tunnel_liveness_via_commands(
+    commands: &mpsc::Sender<Command>,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = StdInstant::now() + timeout;
+    let (primary_host, primary_port) = LIVENESS_PROBE_TARGETS[0];
+    let (secondary_host, secondary_port) = LIVENESS_PROBE_TARGETS[1];
+    let primary_timeout = deadline.saturating_duration_since(StdInstant::now());
+    if primary_timeout.is_zero() {
+        return Err("liveness probe timed out".to_string());
+    }
+    let primary = probe_single_target(commands, primary_host, primary_port, primary_timeout);
+    tokio::pin!(primary);
+
+    let hedge_delay = LIVENESS_PROBE_HEDGE_DELAY.min(primary_timeout);
+    let primary_error = tokio::select! {
+        result = &mut primary => match result {
+            Ok(()) => return Ok(()),
+            Err(error) => Some(error),
+        },
+        () = tokio::time::sleep(hedge_delay) => None,
+    };
+
+    let remaining = deadline.saturating_duration_since(StdInstant::now());
+    if remaining.is_zero() {
+        return Err(primary_error.unwrap_or_else(|| "liveness probe timed out".to_string()));
+    }
+
+    if let Some(first_error) = primary_error {
+        return probe_single_target(commands, secondary_host, secondary_port, remaining)
+            .await
+            .map_err(|second_error| format!("{first_error}; {second_error}"));
+    }
+
+    let secondary = probe_single_target(commands, secondary_host, secondary_port, remaining);
+    tokio::pin!(secondary);
+
+    tokio::select! {
+        first = &mut primary => match first {
+            Ok(()) => Ok(()),
+            Err(first_error) => match secondary.await {
+                Ok(()) => Ok(()),
+                Err(second_error) => Err(format!("{first_error}; {second_error}")),
+            },
+        },
+        second = &mut secondary => match second {
+            Ok(()) => Ok(()),
+            Err(second_error) => match primary.await {
+                Ok(()) => Ok(()),
+                Err(first_error) => Err(format!("{first_error}; {second_error}")),
+            },
+        },
     }
 }
 
@@ -135,6 +294,15 @@ enum Command {
         port: u16,
         reply: oneshot::Sender<Result<DuplexStream, ProxyConnectError>>,
     },
+    Probe {
+        host: String,
+        port: u16,
+        timeout: Duration,
+        reply: oneshot::Sender<Result<DuplexStream, ProxyConnectError>>,
+    },
+    FailZombie {
+        reason: String,
+    },
     Write {
         id: u64,
         bytes: Vec<u8>,
@@ -161,6 +329,9 @@ struct Netstack {
     next_connection_id: u64,
     next_port: u16,
     started_at: StdInstant,
+    last_liveness_ms: Arc<AtomicU64>,
+    active_liveness_probe: bool,
+    probe_in_flight: Arc<AtomicBool>,
     consecutive_dial_timeouts: u32,
 }
 
@@ -180,6 +351,7 @@ struct Resolution {
     grace_deadline: Option<StdInstant>,
     dns_deadline: StdInstant,
     dial_deadline: StdInstant,
+    is_probe: bool,
 }
 
 struct Connection {
@@ -192,6 +364,7 @@ struct Connection {
     overall_deadline: StdInstant,
     attempt_deadline: StdInstant,
     established: bool,
+    is_probe: bool,
 }
 
 struct PendingWrite {
@@ -207,6 +380,9 @@ impl Netstack {
         commands: mpsc::Sender<Command>,
         command_receiver: mpsc::Receiver<Command>,
         inbound_receiver: mpsc::Receiver<Vec<u8>>,
+        started_at: StdInstant,
+        last_liveness_ms: Arc<AtomicU64>,
+        active_liveness_probe: bool,
     ) -> Result<Self, String> {
         let mut seed = [0; 8];
         getrandom::fill(&mut seed)
@@ -280,13 +456,18 @@ impl Netstack {
             local_ipv6: configuration.ipv6,
             next_connection_id: 1,
             next_port,
-            started_at: StdInstant::now(),
+            started_at,
+            last_liveness_ms,
+            active_liveness_probe,
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
             consecutive_dial_timeouts: 0,
         })
     }
 
     fn record_tunnel_liveness(&mut self) {
         self.consecutive_dial_timeouts = 0;
+        let elapsed_ms = self.started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        self.last_liveness_ms.store(elapsed_ms, Ordering::Release);
     }
 
     fn record_dial_timeout(&mut self) -> Result<(), String> {
@@ -297,6 +478,46 @@ impl Netstack {
                 self.consecutive_dial_timeouts
             );
             return Err(ZOMBIE_TUNNEL_ERROR.to_string());
+        }
+        if self.active_liveness_probe
+            && self
+                .probe_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            if let Ok(runtime) = Handle::try_current() {
+                let commands = self.commands.clone();
+                let flag = self.probe_in_flight.clone();
+                runtime.spawn(async move {
+                    let _guard = ProbeFlagGuard(flag);
+                    match probe_tunnel_liveness_via_commands(
+                        &commands,
+                        TUNNEL_LIVENESS_PROBE_TIMEOUT,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            log::debug!(
+                                "plugin VPN tunnel passed active liveness probe after dial timeout"
+                            );
+                        }
+                        Err(detail) => {
+                            log::warn!(
+                                "plugin VPN tunnel failed active liveness probe after dial timeout: {detail}"
+                            );
+                            let _ = commands
+                                .send(Command::FailZombie {
+                                    reason: format!(
+                                        "active liveness probe failed after dial timeout: {detail}"
+                                    ),
+                                })
+                                .await;
+                        }
+                    }
+                });
+            } else {
+                self.probe_in_flight.store(false, Ordering::Release);
+            }
         }
         Ok(())
     }
@@ -354,7 +575,17 @@ impl Netstack {
 
     fn handle_command(&mut self, command: Command) -> Result<(), String> {
         match command {
-            Command::Dial { host, port, reply } => self.start_dial(host, port, reply),
+            Command::Dial { host, port, reply } => self.start_dial(host, port, reply, None, false),
+            Command::Probe {
+                host,
+                port,
+                timeout,
+                reply,
+            } => self.start_dial(host, port, reply, Some(timeout), true),
+            Command::FailZombie { reason } => {
+                log::warn!("plugin VPN tunnel marked unresponsive: {reason}");
+                Err(ZOMBIE_TUNNEL_ERROR.to_string())
+            }
             Command::Write { id, bytes, reply } => {
                 if let Some(connection) = self.connections.get_mut(&id) {
                     connection.pending_writes.push_back(PendingWrite {
@@ -379,15 +610,22 @@ impl Netstack {
         host: String,
         port: u16,
         reply: oneshot::Sender<Result<DuplexStream, ProxyConnectError>>,
+        timeout_override: Option<Duration>,
+        is_probe: bool,
     ) -> Result<(), String> {
+        let now = StdInstant::now();
         if let Ok(address) = host.parse::<IpAddr>() {
+            let tcp_timeout = timeout_override
+                .map(|limit| limit.min(TCP_DIAL_TIMEOUT))
+                .unwrap_or(TCP_DIAL_TIMEOUT);
             return self.start_tcp_candidates(
                 std::iter::once(address).collect(),
                 port,
                 reply,
-                StdInstant::now() + TCP_DIAL_TIMEOUT,
+                now + tcp_timeout,
                 None,
                 false,
+                is_probe,
             );
         }
 
@@ -413,8 +651,7 @@ impl Netstack {
             return Ok(());
         }
 
-        let now = StdInstant::now();
-        let dial_deadline = now + DIAL_TIMEOUT;
+        let dial_deadline = now + timeout_override.unwrap_or(DIAL_TIMEOUT);
         let dns_deadline = (now + DNS_LOOKUP_TIMEOUT).min(dial_deadline);
         let next_server_at = (!remaining_servers.is_empty())
             .then(|| (now + DNS_SERVER_HEDGE_DELAY).min(dns_deadline));
@@ -429,6 +666,7 @@ impl Netstack {
             grace_deadline: None,
             dns_deadline,
             dial_deadline,
+            is_probe,
         });
         Ok(())
     }
@@ -576,6 +814,7 @@ impl Netstack {
                     tcp_deadline,
                     None,
                     false,
+                    resolution.is_probe,
                 )?;
                 continue;
             }
@@ -602,7 +841,9 @@ impl Netstack {
                 let _ = resolution
                     .reply
                     .send(Err(ProxyConnectError::dns("VPN DNS lookup timed out")));
-                dial_timeouts = dial_timeouts.saturating_add(1);
+                if !resolution.is_probe {
+                    dial_timeouts = dial_timeouts.saturating_add(1);
+                }
             } else {
                 if !resolution.addresses.is_empty() && resolution.grace_deadline.is_none() {
                     resolution.grace_deadline =
@@ -636,6 +877,7 @@ impl Netstack {
         overall_deadline: StdInstant,
         mut last_error: Option<String>,
         timed_out: bool,
+        is_probe: bool,
     ) -> Result<(), String> {
         if reply.is_closed() {
             return Ok(());
@@ -646,7 +888,10 @@ impl Netstack {
         }
         if StdInstant::now() >= overall_deadline {
             let _ = reply.send(Err(ProxyConnectError::tcp("VPN TCP connection timed out")));
-            return self.record_dial_timeout();
+            if !is_probe {
+                return self.record_dial_timeout();
+            }
+            return Ok(());
         }
 
         while let Some(remote) = addresses.pop_front() {
@@ -705,6 +950,7 @@ impl Netstack {
                     attempt_deadline: (StdInstant::now() + attempt_timeout)
                         .min(overall_deadline),
                     established: false,
+                    is_probe,
                 },
             );
             return Ok(());
@@ -713,7 +959,7 @@ impl Netstack {
         let error = last_error.map(ProxyConnectError::tcp)
             .unwrap_or_else(|| ProxyConnectError::dns("VPN DNS lookup returned no usable address"));
         let _ = reply.send(Err(error));
-        if timed_out {
+        if timed_out && !is_probe {
             return self.record_dial_timeout();
         }
         Ok(())
@@ -739,11 +985,11 @@ impl Netstack {
                     continue;
                 }
                 if StdInstant::now() >= connection.overall_deadline {
-                    remove.push((id, "VPN TCP connection timed out".to_string(), true));
+                    remove.push((id, "VPN TCP connection timed out".to_string(), !connection.is_probe));
                     continue;
                 }
                 if StdInstant::now() >= connection.attempt_deadline {
-                    retry.push((id, "VPN TCP connection attempt timed out".to_string(), true));
+                    retry.push((id, "VPN TCP connection attempt timed out".to_string(), !connection.is_probe));
                     continue;
                 }
                 if socket.state() == tcp::State::Established {
@@ -814,14 +1060,16 @@ impl Netstack {
                     }
                 };
                 bytes.truncate(count);
-                if count > 0
-                    && connection
+                if count > 0 {
+                    saw_liveness = true;
+                    if connection
                         .inbound
                         .as_ref()
                         .is_some_and(|sender| sender.try_send(bytes).is_err())
-                {
-                    remove.push((id, "VPN TCP receive buffer closed".to_string(), false));
-                    continue;
+                    {
+                        remove.push((id, "VPN TCP receive buffer closed".to_string(), false));
+                        continue;
+                    }
                 }
             }
             if connection.established && !socket.may_recv() && socket.recv_queue() == 0 {
@@ -867,6 +1115,7 @@ impl Netstack {
             connection.overall_deadline,
             Some(reason.to_string()),
             timed_out,
+            connection.is_probe,
         )
     }
 
@@ -1139,6 +1388,9 @@ mod tests {
             commands,
             receiver,
             inbound,
+            StdInstant::now(),
+            Arc::new(AtomicU64::new(0)),
+            false,
         ).expect("test stack")
     }
 
@@ -1208,7 +1460,7 @@ mod tests {
     fn exhausted_dns_socket_retains_dns_failure_without_claiming_nxdomain() {
         let mut stack = dns_test_stack();
         let (reply, mut response) = oneshot::channel();
-        stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+        stack.start_dial("source.example".into(), 443, reply, None, false).expect("start DNS");
         // Exercise smoltcp's real per-server deadline with a discarded packet
         // sink. Advancing its clock requires no network and no wall-clock wait.
         stack.interface.poll(Instant::from_millis(0), &mut stack.device, &mut stack.sockets);
@@ -1224,7 +1476,7 @@ mod tests {
     fn application_dns_deadline_stays_distinct_from_no_usable_answer() {
         let mut stack = dns_test_stack();
         let (reply, mut response) = oneshot::channel();
-        stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+        stack.start_dial("source.example".into(), 443, reply, None, false).expect("start DNS");
         stack.resolutions[0].dns_deadline = StdInstant::now();
         stack.process_resolutions().expect("per-request timeout is not a tunnel failure");
         let error = response.try_recv().expect("DNS result").err().expect("expired lookup");
@@ -1244,7 +1496,7 @@ mod tests {
         );
 
         let (reply, _response) = oneshot::channel();
-        stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+        stack.start_dial("source.example".into(), 443, reply, None, false).expect("start DNS");
         stack.interface.poll(Instant::from_millis(0), &mut stack.device, &mut stack.sockets);
 
         let initial_queries = sink
@@ -1291,7 +1543,7 @@ mod tests {
 
         // Next dial should start immediately on the healthy secondary server.
         let (next_reply, _next_response) = oneshot::channel();
-        stack.start_dial("next.example".into(), 443, next_reply).expect("start next DNS");
+        stack.start_dial("next.example".into(), 443, next_reply, None, false).expect("start next DNS");
         stack.interface.poll(Instant::from_millis(1_800), &mut stack.device, &mut stack.sockets);
         let next_queries = sink
             .take_packets()
@@ -1313,7 +1565,7 @@ mod tests {
         );
 
         let (reply, _response) = oneshot::channel();
-        stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+        stack.start_dial("source.example".into(), 443, reply, None, false).expect("start DNS");
         stack.interface.poll(Instant::from_millis(0), &mut stack.device, &mut stack.sockets);
         let primary_query = sink
             .take_packets()
@@ -1368,7 +1620,7 @@ mod tests {
             Arc::new(DiscardSink),
         );
         let (reply, mut response) = oneshot::channel();
-        stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+        stack.start_dial("source.example".into(), 443, reply, None, false).expect("start DNS");
         stack.resolutions[0].next_server_at = Some(StdInstant::now());
         stack.process_resolutions().expect("hedge before timeout");
         assert_eq!(stack.resolutions[0].queries.len(), 2);
@@ -1485,6 +1737,7 @@ mod tests {
                 &Handle::current(),
                 configuration,
                 Arc::new(DiscardSink),
+                false,
                 Arc::new(|_| {}),
             )
             .expect("network stack");
@@ -1526,6 +1779,7 @@ mod tests {
                 now + TCP_DIAL_TIMEOUT,
                 None,
                 false,
+                false,
             )
             .expect("start multi-IP TCP dial");
         let connection = stack.connections.values().next().expect("active connection");
@@ -1539,7 +1793,7 @@ mod tests {
         let mut stack = dns_test_stack();
         for _ in 0..(ZOMBIE_TUNNEL_TIMEOUT_THRESHOLD - 1) {
             let (reply, mut response) = oneshot::channel();
-            stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+            stack.start_dial("source.example".into(), 443, reply, None, false).expect("start DNS");
             stack.resolutions[0].dns_deadline = StdInstant::now();
             stack.process_resolutions().expect("below zombie threshold");
             assert_eq!(
@@ -1556,7 +1810,7 @@ mod tests {
         for attempt in 1..=ZOMBIE_TUNNEL_TIMEOUT_THRESHOLD {
             let (reply, mut response) = oneshot::channel();
             stack
-                .start_dial("198.51.100.10".into(), 443, reply)
+                .start_dial("198.51.100.10".into(), 443, reply, None, false)
                 .expect("start TCP dial");
             let id = *stack.connections.keys().next().expect("connection id");
             stack.connections.get_mut(&id).expect("connection").attempt_deadline = StdInstant::now();
@@ -1571,5 +1825,74 @@ mod tests {
                 assert_eq!(result.unwrap_err(), ZOMBIE_TUNNEL_ERROR);
             }
         }
+    }
+
+    #[test]
+    fn probe_timeouts_do_not_increment_dial_timeout_counter() {
+        let mut stack = dns_test_stack();
+        let (reply, mut response) = oneshot::channel();
+        stack
+            .start_dial(
+                "one.one.one.one".into(),
+                443,
+                reply,
+                Some(Duration::from_secs(2)),
+                true,
+            )
+            .expect("start probe DNS");
+        stack.resolutions[0].dns_deadline = StdInstant::now();
+        stack.process_resolutions().expect("probe timeout stays isolated");
+        assert_eq!(stack.consecutive_dial_timeouts, 0);
+        assert_eq!(
+            response.try_recv().expect("probe error").err().expect("timeout").kind,
+            super::super::transport::PluginVpnTransportFailureKind::Dns
+        );
+    }
+
+    #[test]
+    fn health_check_skips_fresh_tunnel_and_fails_blackhole_tunnel() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let (failure_tx, failure_rx) = oneshot::channel::<String>();
+            let failure_tx = Arc::new(Mutex::new(Some(failure_tx)));
+            let network = UserSpaceNetwork::start(
+                &Handle::current(),
+                TunnelConfiguration {
+                    ipv4: Some(Ipv4Addr::new(10, 8, 0, 2)),
+                    gateway_ipv4: Some(Ipv4Addr::new(10, 8, 0, 1)),
+                    ipv6: None,
+                    gateway_ipv6: None,
+                    dns_servers: vec![IpAddr::V4(Ipv4Addr::new(10, 8, 0, 53))],
+                    mtu: 1500,
+                },
+                Arc::new(DiscardSink),
+                false,
+                Arc::new(move |error| {
+                    if let Some(tx) = failure_tx.lock().expect("failure tx").take() {
+                        let _ = tx.send(error);
+                    }
+                }),
+            )
+            .expect("network stack");
+            let health = network.health_handle();
+            health
+                .check_health(Some(Duration::from_secs(60)))
+                .await
+                .expect("fresh tunnel skips probe");
+            let error = health
+                .check_health(None)
+                .await
+                .expect_err("blackhole tunnel must fail forced health check");
+            assert_eq!(error, ZOMBIE_TUNNEL_ERROR);
+            let failure = tokio::time::timeout(Duration::from_secs(2), failure_rx)
+                .await
+                .expect("failure callback arrives")
+                .expect("failure payload");
+            assert_eq!(failure, ZOMBIE_TUNNEL_ERROR);
+            network.stop();
+        });
     }
 }

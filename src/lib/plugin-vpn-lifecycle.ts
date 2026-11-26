@@ -1,4 +1,5 @@
 import {
+  checkPluginVpnHealth,
   getPluginVpnStatus,
   isPluginVpnRecoveryStopped,
   pluginVpnProfileSucceededAt,
@@ -189,6 +190,16 @@ export function startPluginVpnLifecycle({
     if (profileFailures < FAILURES_BEFORE_PROFILE_SWITCH) return "retry";
     return switchProfile(profile);
   };
+  const handleZombieRestoreFailure = async (): Promise<FailureOutcome> => {
+    let profile: PluginVpnStatus["profile"];
+    try {
+      profile = (await getPluginVpnStatus()).profile;
+    } catch {
+      return "retry";
+    }
+    if (!profile) return "retry";
+    return switchProfile(profile, true);
+  };
   const recoverZombieTunnel = (profile: PluginVpnProfile, errorMessage: string) => {
     if (!active || !isNetworkOnline() || isPluginVpnRecoveryStopped()) return;
     if (restoring) {
@@ -198,8 +209,10 @@ export function startPluginVpnLifecycle({
     clearRetry();
     clearStabilityTimer();
     restoring = true;
-    failedAttempts += 1;
-    if (failedAttempts === 1) onError(new Error(errorMessage));
+    console.warn("[plugin-vpn] zombie tunnel detected; switching profile", {
+      error: errorMessage,
+      remoteHost: profile.remoteHost,
+    });
     void switchProfile(profile, true).catch((failure: unknown) => {
       console.warn("[plugin-vpn] zombie tunnel failover failed", failure);
       return "retry" as const;
@@ -207,10 +220,14 @@ export function startPluginVpnLifecycle({
       restoring = false;
       if (!active || !isNetworkOnline()) return;
       if (outcome === "switched" || outcome === "retry") restore();
-      else if (outcome === "stopped") onStopped?.();
+      else if (outcome === "stopped") {
+        failedAttempts += 1;
+        if (failedAttempts === 1) onError(new Error(errorMessage));
+        onStopped?.();
+      }
     });
   };
-  const restore = () => {
+  const restore = (verifyHealthIfConnected = false) => {
     if (!active || restoring || !isNetworkOnline() || retryTimer !== null || isPluginVpnRecoveryStopped()) return;
     clearRetry();
     restoring = true;
@@ -223,6 +240,13 @@ export function startPluginVpnLifecycle({
         } else {
           failedAttempts = 0;
           retryFailures = 0;
+          if (
+            verifyHealthIfConnected &&
+            usePluginVpnStore.getState().enabled &&
+            typeof checkPluginVpnHealth === "function"
+          ) {
+            void checkPluginVpnHealth().catch(() => undefined);
+          }
         }
         if (status) onRestored(status);
         if (pendingZombieProfile) {
@@ -243,18 +267,21 @@ export function startPluginVpnLifecycle({
           restoring = false;
           return;
         }
+        const errorText = describeError(error);
+        const zombieFailure = ZOMBIE_TUNNEL_ERROR.test(errorText);
         failedAttempts += 1;
         retryFailures += 1;
         publishRecoverySnapshot({
           failedAttempts,
-          lastError: describeError(error),
+          lastError: errorText,
         });
-        if (failedAttempts === 1) onError(error);
+        if (!zombieFailure && failedAttempts === 1) onError(error);
         if (!isRetryablePluginVpnError(error)) {
           restoring = false;
           return;
         }
-        void handleFailure().catch((failure: unknown) => {
+        const nextStep = zombieFailure ? handleZombieRestoreFailure() : handleFailure();
+        void nextStep.catch((failure: unknown) => {
           console.warn("[plugin-vpn] recovery profile switch failed", failure);
           return "retry" as const;
         }).then((outcome) => {
@@ -262,7 +289,10 @@ export function startPluginVpnLifecycle({
           if (!active || !isNetworkOnline()) return;
           if (outcome === "retry") scheduleRetry();
           else if (outcome === "switched") restore();
-          else if (outcome === "stopped") onStopped?.();
+          else if (outcome === "stopped") {
+            if (zombieFailure) onError(error);
+            onStopped?.();
+          }
         });
       },
     );
@@ -295,15 +325,16 @@ export function startPluginVpnLifecycle({
     }
   });
   const foreground = () => {
-    if (isAppActive()) restore();
+    if (isAppActive()) restore(true);
   };
+  const resumed = () => restore(true);
   const unsubscribeLifecycle = subscribeAppLifecycle((appActive) => {
-    if (appActive) restore();
+    if (appActive) restore(true);
   });
   window.addEventListener("focus", foreground);
   const separateResumedListener = !isAndroidRuntime();
   if (separateResumedListener) {
-    window.addEventListener("norea-app-resumed", restore);
+    window.addEventListener("norea-app-resumed", resumed);
   }
   void startPluginVpnStatusListener((event) => {
     if (event.kind === "reconnected" && event.status.phase === "connected") {
@@ -340,7 +371,7 @@ export function startPluginVpnLifecycle({
       console.warn("[plugin-vpn] failed to watch for lost connections", error);
     },
   );
-  restore();
+  restore(true);
   return () => {
     active = false;
     clearRetry();
@@ -352,7 +383,7 @@ export function startPluginVpnLifecycle({
     unsubscribeLifecycle();
     window.removeEventListener("focus", foreground);
     if (separateResumedListener) {
-      window.removeEventListener("norea-app-resumed", restore);
+      window.removeEventListener("norea-app-resumed", resumed);
     }
     recoveryRequests.delete(requestRecovery);
     publishRecoverySnapshot(EMPTY_RECOVERY_SNAPSHOT);

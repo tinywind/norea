@@ -43,6 +43,8 @@ const PLUGIN_VPN_STATUS_EVENT: &str = "plugin-vpn-status";
 const VPN_GATE_PUBLIC_CREDENTIAL: &str = "vpn";
 #[cfg(any(target_os = "android", target_os = "windows"))]
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(any(target_os = "android", target_os = "windows"))]
+const STALE_LIVENESS_THRESHOLD: Duration = Duration::from_secs(45);
 
 pub(crate) fn managed_profile_path(app_data_directory: &Path) -> Result<PathBuf, String> {
     // Android's app namespace can alias /data/user/0. Resolve only the OS root,
@@ -561,6 +563,65 @@ fn emit_status_event(app: &AppHandle, status: PluginVpnStatus, kind: PluginVpnSt
 #[tauri::command]
 pub(crate) fn plugin_vpn_status(state: State<'_, PluginVpnState>) -> PluginVpnStatus {
     state.status()
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_check_health(
+    force: Option<bool>,
+    app: AppHandle,
+    state: State<'_, PluginVpnState>,
+) -> Result<PluginVpnStatus, String> {
+    #[cfg(any(target_os = "android", target_os = "windows"))]
+    {
+        let (generation, control) = {
+            let runtime = state.shared.state.lock().expect("plugin VPN state lock");
+            let is_vpn_gate = runtime
+                .profile
+                .as_ref()
+                .is_some_and(|profile| profile.is_vpn_gate_finder);
+            if runtime.phase != PluginVpnPhase::Connected || !is_vpn_gate {
+                return Ok(state.status_from_runtime(&runtime));
+            }
+            (runtime.generation, runtime.control.clone())
+        };
+        let Some(control) = control else {
+            return Ok(state.status());
+        };
+        let max_idle = if force.unwrap_or(false) {
+            None
+        } else {
+            Some(STALE_LIVENESS_THRESHOLD)
+        };
+        if let Err(error) = control.check_health(max_idle).await {
+            control.cancel();
+            let status = {
+                let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+                if runtime.generation == generation && runtime.phase != PluginVpnPhase::Error {
+                    state
+                        .shared
+                        .proxy
+                        .block("The plugin VPN connection is unavailable");
+                    runtime.phase = PluginVpnPhase::Error;
+                    runtime.error = Some(error);
+                    runtime.connecting_cancellation = None;
+                    runtime.control = None;
+                    Some(state.status_from_runtime(&runtime))
+                } else {
+                    None
+                }
+            };
+            if let Some(status) = status {
+                emit_status_event(&app, status.clone(), PluginVpnStatusEventKind::Error);
+                return Ok(status);
+            }
+        }
+        return Ok(state.status());
+    }
+    #[cfg(not(any(target_os = "android", target_os = "windows")))]
+    {
+        let _ = (force, app);
+        Ok(state.status())
+    }
 }
 
 #[tauri::command]
@@ -1107,7 +1168,9 @@ pub(crate) async fn plugin_vpn_connect(
                 .state
                 .lock()
                 .expect("plugin VPN state lock");
-            let status = if runtime.generation == generation {
+            let status = if runtime.generation == generation
+                && runtime.phase != PluginVpnPhase::Error
+            {
                 monitor_state
                     .shared
                     .proxy
