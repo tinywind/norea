@@ -52,7 +52,10 @@ import {
   novelDetailQueryKey,
 } from "../lib/reader-query-invalidation";
 import { enqueueChapterMediaRepair } from "../lib/tasks/chapter-download";
-import { isServerChapterMissingFailure } from "../lib/tasks/download-failure";
+import {
+  isServerChapterMissingFailure,
+  isServerChapterMissingWithoutSourceFailure,
+} from "../lib/tasks/download-failure";
 import { useLibraryStore } from "../store/library";
 import { useReaderStore } from "../store/reader";
 import { useReaderLayoutStore } from "../store/reader-layout";
@@ -693,7 +696,8 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     !hasChapterContent &&
     chapterUnavailable?.reason === "failed" ? (
     <Box className="norea-reader-state-frame">
-      {isServerChapterMissingFailure(chapterUnavailable.message) ? (
+      {isServerChapterMissingFailure(chapterUnavailable.message) &&
+      !isServerChapterMissingWithoutSourceFailure(chapterUnavailable.message) ? (
         <StateView
           action={{ label: t("novel.downloadFromSource"), onClick: retryChapterDownload }}
           color="warn"

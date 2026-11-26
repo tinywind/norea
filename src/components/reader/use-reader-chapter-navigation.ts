@@ -30,7 +30,10 @@ import {
   novelLibraryQueryKey,
 } from "../../lib/reader-query-invalidation";
 import { cancelChapterDownloadBatches, enqueueChapterDownload } from "../../lib/tasks/chapter-download";
-import { isServerChapterMissingFailure } from "../../lib/tasks/download-failure";
+import {
+  isServerChapterMissingFailure,
+  isServerChapterMissingWithoutSourceFailure,
+} from "../../lib/tasks/download-failure";
 import { taskScheduler, type TaskHandle } from "../../lib/tasks/scheduler";
 import { type ReaderContentHandle } from "../ReaderContent";
 
@@ -287,7 +290,8 @@ export function useReaderChapterNavigation({
   const retryChapterDownload = useCallback(() => {
     if (!chapter) return;
     const serverMissing = downloadFailure?.chapterId === chapter.id &&
-      isServerChapterMissingFailure(downloadFailure.message);
+      isServerChapterMissingFailure(downloadFailure.message) &&
+      !isServerChapterMissingWithoutSourceFailure(downloadFailure.message);
     openChapter(chapter, serverMissing ? { sourceFallback: true } : undefined);
   }, [chapter, downloadFailure, openChapter]);
 

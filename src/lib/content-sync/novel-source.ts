@@ -1,8 +1,12 @@
 import { isAbortError } from "../abort";
-import { getChapterById } from "../../db/queries/chapter";
+import { getChapterById, type ChapterRow } from "../../db/queries/chapter";
 import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { getNovelById } from "../../db/queries/novel";
 import { useContentSyncStore } from "../../store/content-sync";
+import {
+  isFetchableCompositionSource,
+  resolveFetchableCompositionSource,
+} from "../chapter-composition";
 import { isChapterStorageError, withChapterStorageOperation } from "../chapter-storage-error";
 import { pluginManager } from "../plugins/manager";
 import type { ChapterDownloadJob } from "../tasks/chapter-download";
@@ -78,14 +82,15 @@ const unavailableServers = new Map<string, number>();
 
 async function hasInstalledSourceFallback(
   novel: { isLocal?: boolean; pluginId: string; path: string },
-  chapter: { compositionSource?: { pluginId: string; chapterPath: string } },
+  chapter: Pick<ChapterRow, "compositionSource" | "compositionFallbackSources">,
   signal?: AbortSignal,
 ): Promise<boolean> {
   if (chapter.compositionSource) {
-    if (
-      chapter.compositionSource.chapterPath.startsWith("norea-folder:") ||
-      chapter.compositionSource.chapterPath.startsWith("norea-composed:")
-    ) {
+    const primaryFetchable = isFetchableCompositionSource(chapter.compositionSource);
+    const hasFetchableFallback = Boolean(
+      chapter.compositionFallbackSources?.some(isFetchableCompositionSource),
+    );
+    if (!primaryFetchable && !hasFetchableFallback) {
       return false;
     }
     if (isTauriRuntime()) {
@@ -93,7 +98,11 @@ async function hasInstalledSourceFallback(
       await pluginManager.loadInstalledFromDb();
       signal?.throwIfAborted();
     }
-    return Boolean(pluginManager.getPlugin(chapter.compositionSource.pluginId));
+    return Boolean(
+      resolveFetchableCompositionSource(chapter, (pluginId) =>
+        Boolean(pluginManager.getPlugin(pluginId)),
+      ),
+    );
   }
   if (novel.isLocal || novel.pluginId === "local" || novel.path.startsWith("norea-folder:")) {
     return false;
@@ -162,7 +171,8 @@ export async function tryDownloadServerChapter(
   onPhase?.("server-lookup");
   const serverOnlyShape =
     options.sourceFallback === false ||
-    ((novel.isLocal || novel.path.startsWith("norea-folder:")) && !chapter.compositionSource);
+    ((novel.isLocal || novel.path.startsWith("norea-folder:")) &&
+      !resolveFetchableCompositionSource(chapter));
   let found: { entry: CatalogEntry; token: string } | null;
   try {
     found = await withContentServerLookup(async deadline => {
@@ -197,8 +207,11 @@ export async function tryDownloadServerChapter(
   const remoteIdentity = (value: CatalogEntry) => ({ chapterPath: value.manifest.identity.chapterPath, chapterNumber: value.manifest.chapter?.chapterNumber });
   if (found && isOtherServerChapterUnderNumber(remoteIdentity(found.entry), requested)) found = null;
   if (!found) {
-    if (source && (!allowSourceFallback || !(await hasInstalledSourceFallback(novel, chapter, signal)))) {
-      throw new ServerChapterMissingError();
+    if (source) {
+      const hasSourceFallback = await hasInstalledSourceFallback(novel, chapter, signal);
+      if (!allowSourceFallback || !hasSourceFallback) {
+        throw new ServerChapterMissingError({ sourceUnavailable: !hasSourceFallback });
+      }
     }
     return false;
   }

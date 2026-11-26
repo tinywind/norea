@@ -2,6 +2,7 @@ import { MantineProvider } from "@mantine/core";
 import { load } from "cheerio";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import type { StoredChapterDownloadFailure } from "../db/queries/chapter-download-failure";
 import type { TaskRecord, TaskSnapshot } from "../lib/tasks/task-types";
 import type { VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-drafts";
 import type { ChapterDownloadRequestState } from "../lib/tasks/chapter-download-requests";
@@ -12,6 +13,8 @@ import type { OverflowMenuItem } from "../components/ui/OverflowMenu";
 const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefined,
   vpn: { drafts: [], plans: [], loading: false, error: null, capabilities: { supported: true, parallelSupported: true, maxWorkers: 10 }, chapterLabels: {}, ownedChapterIds: [] } as VpnDownloadRuntimeSnapshot,
   requests: [] as ChapterDownloadRequestState[],
+  failures: [] as StoredChapterDownloadFailure[],
+  forgetFailures: vi.fn<(...args: [readonly number[]]) => Promise<void>>().mockResolvedValue(undefined),
   vpnWorks: [] as VpnDownloadWork[],
   fontScalePercent: 100,
   focus: undefined as string | undefined,
@@ -25,8 +28,9 @@ vi.mock("@tanstack/react-router", () => ({
     select({ location: { pathname: "/downloads", search: { view: "queue", focus: state.focus } } }),
 }));
 vi.mock("../lib/tasks/hooks", () => ({ useTaskSnapshot: () => state.snapshot, useVpnDownloadRuntimeSnapshot: () => state.vpn,
-  useChapterDownloadRequestSnapshot: () => state.requests, useChapterDownloadFailureSnapshot: () => [] }));
+  useChapterDownloadRequestSnapshot: () => state.requests, useChapterDownloadFailureSnapshot: () => state.failures }));
 vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn() }));
+vi.mock("../lib/tasks/chapter-download-failures", () => ({ forgetChapterDownloadFailures: state.forgetFailures }));
 vi.mock("../lib/tasks/chapter-download-requests", () => ({ cancelChapterDownloadRequest: vi.fn() }));
 vi.mock("../lib/tasks/vpn-download-runtime", () => ({ pauseVpnDownloadRun: vi.fn(), resumeVpnDownloadRun: vi.fn(), cancelVpnDownloadRun: vi.fn() }));
 vi.mock("../components/ui/OverflowMenu", async importOriginal => {
@@ -258,6 +262,20 @@ describe("task work group order", () => {
       .get();
     expect(texts).toContain("The site refused access (HTTP 403). Downloads are paused. Check the site before resuming.");
     expect(texts).toContain("Some images in this chapter could not be downloaded.");
+  });
+
+  it("uses non-retryable copy when a chapter is missing on the server with no original source", () => {
+    const failed = {
+      ...chapter(4, 3, "failed"),
+      error: "This chapter is not on the content server, and no original source is available.",
+    };
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [failed],
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($(".norea-task-row[data-status='failed'] .norea-task-row-error-text").text())
+      .toBe("This chapter is not on the content server, and no original source is available.");
   });
   it("shows a promoted work above the work whose transfer is still running", () => {
     expect(workTitles([
@@ -525,5 +543,43 @@ it("keeps the OS battery control out of the downloads queue", () => {
     expect(markup).not.toContain("Battery optimization exemption");
   } finally {
     vi.unstubAllGlobals();
+  }
+});
+
+it("enables Clear errors for persisted attention failures and clears both failed tasks and persisted failures", async () => {
+  const { taskScheduler } = await import("../lib/tasks/scheduler");
+  const clearFailedSpy = vi.spyOn(taskScheduler, "clearFailedTasks").mockImplementation(() => 0);
+  state.menus = [];
+  state.forgetFailures.mockClear();
+  state.failures = [
+    {
+      chapterId: 10, pluginId: "source", failureClass: "content",
+      messageSummary: "This chapter is not on the content server, and no original source is available.",
+      challengeUrl: null, attempts: 1, nextRetryAt: null, jobJson: "{}", updatedAt: 10,
+    },
+    {
+      chapterId: 11, pluginId: "source", failureClass: "transient",
+      messageSummary: "HTTP 503",
+      challengeUrl: null, attempts: 1, nextRetryAt: Date.now() + 60_000, jobJson: "{}", updatedAt: 11,
+    },
+  ];
+  try {
+    workTitles([]);
+    const clearItem = state.menus.flat().find((item) => item.label === "Clear errors");
+    expect(clearItem).toBeDefined();
+    expect(clearItem?.disabled).toBe(false);
+    await clearItem!.onClick!();
+    expect(clearFailedSpy).toHaveBeenCalledTimes(1);
+    expect(state.forgetFailures).toHaveBeenCalledWith([10]);
+
+    // Waiting automatic retries alone should keep Clear errors disabled.
+    state.menus = [];
+    state.failures = [state.failures[1]!];
+    workTitles([]);
+    const disabledItem = state.menus.flat().find((item) => item.label === "Clear errors");
+    expect(disabledItem?.disabled).toBe(true);
+  } finally {
+    state.failures = [];
+    clearFailedSpy.mockRestore();
   }
 });

@@ -125,6 +125,8 @@ pub struct ChapterRowDto {
     pub display_chapter_number: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composition_source: Option<ChapterSourceSnapshotDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_fallback_sources: Option<Vec<ChapterSourceSnapshotDto>>,
     pub position: i64,
     pub page: String,
     pub bookmark: bool,
@@ -730,6 +732,7 @@ fn map_chapter_row(row: &sqlx::sqlite::SqliteRow) -> ChapterRowDto {
         chapter_number: row.get("chapter_number"),
         display_chapter_number: None,
         composition_source: None,
+        composition_fallback_sources: None,
         position: row.get("position"),
         page: row.get("page"),
         bookmark: row.get::<i64, _>("bookmark") != 0,
@@ -768,10 +771,22 @@ fn map_storage_row(row: &sqlx::sqlite::SqliteRow) -> ChapterStorageRowDto {
     }
 }
 
+struct CompositionDisplay {
+    display_chapter_number: String,
+    primary_source: ChapterSourceSnapshotDto,
+    fallback_sources: Vec<ChapterSourceSnapshotDto>,
+}
+
+fn is_fetchable_composition_source(source: &ChapterSourceSnapshotDto) -> bool {
+    source.plugin_id != LOCAL_PLUGIN_ID
+        && !source.chapter_path.starts_with("norea-folder:")
+        && !source.chapter_path.starts_with("norea-composed:")
+}
+
 async fn load_composition_displays_in_conn(
     conn: &mut SqliteConnection,
     novel_ids: &[i64],
-) -> Result<HashMap<i64, HashMap<String, (String, ChapterSourceSnapshotDto)>>, String> {
+) -> Result<HashMap<i64, HashMap<String, CompositionDisplay>>, String> {
     let mut unique_ids = Vec::new();
     let mut seen = HashSet::new();
     for id in novel_ids {
@@ -783,8 +798,7 @@ async fn load_composition_displays_in_conn(
         return Ok(HashMap::new());
     }
 
-    let mut displays: HashMap<i64, HashMap<String, (String, ChapterSourceSnapshotDto)>> =
-        HashMap::new();
+    let mut displays: HashMap<i64, HashMap<String, CompositionDisplay>> = HashMap::new();
     for chunk in unique_ids.chunks(SQLITE_BIND_PARAMETER_BUDGET) {
         let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
@@ -815,8 +829,29 @@ async fn load_composition_displays_in_conn(
                     .user
                     .chapter_number
                     .unwrap_or_else(|| entry.user.order.to_string());
-                if let Some(source) = entry.sources.get(entry.primary_source).cloned() {
-                    by_path.insert(entry.path, (display_num, source));
+                if let Some(primary_source) = entry.sources.get(entry.primary_source).cloned() {
+                    let fallback_sources = if is_fetchable_composition_source(&primary_source) {
+                        Vec::new()
+                    } else {
+                        entry
+                            .sources
+                            .iter()
+                            .enumerate()
+                            .filter(|(idx, source)| {
+                                *idx != entry.primary_source
+                                    && is_fetchable_composition_source(source)
+                            })
+                            .map(|(_, source)| source.clone())
+                            .collect()
+                    };
+                    by_path.insert(
+                        entry.path,
+                        CompositionDisplay {
+                            display_chapter_number: display_num,
+                            primary_source,
+                            fallback_sources,
+                        },
+                    );
                 }
             }
             displays.insert(novel_id, by_path);
@@ -835,12 +870,14 @@ async fn apply_composition_displays_to_chapters_in_conn(
     let novel_ids: Vec<i64> = rows.iter().map(|r| r.novel_id).collect();
     let displays = load_composition_displays_in_conn(conn, &novel_ids).await?;
     for row in rows {
-        if let Some((display_num, source)) = displays
+        if let Some(display) = displays
             .get(&row.novel_id)
             .and_then(|by_path| by_path.get(&row.path))
         {
-            row.display_chapter_number = Some(display_num.clone());
-            row.composition_source = Some(source.clone());
+            row.display_chapter_number = Some(display.display_chapter_number.clone());
+            row.composition_source = Some(display.primary_source.clone());
+            row.composition_fallback_sources = (!display.fallback_sources.is_empty())
+                .then(|| display.fallback_sources.clone());
         }
     }
     Ok(())
@@ -2206,12 +2243,12 @@ pub async fn list_recently_read_in_conn(
         let displays = load_composition_displays_in_conn(conn, &novel_ids).await?;
         for entry in &mut entries {
             let path = entry.chapter_path.as_deref().unwrap_or("");
-            if let Some((display_num, source)) = displays
+            if let Some(display) = displays
                 .get(&entry.novel_id)
                 .and_then(|by_path| by_path.get(path))
             {
-                entry.display_chapter_number = Some(display_num.clone());
-                entry.composition_source = Some(source.clone());
+                entry.display_chapter_number = Some(display.display_chapter_number.clone());
+                entry.composition_source = Some(display.primary_source.clone());
             }
         }
     }
@@ -4544,6 +4581,157 @@ mod tests {
             Some("101")
         );
         assert!(composed_chapters[0].composition_source.is_some());
+        assert!(composed_chapters[0].composition_fallback_sources.is_none());
+        drop(reader_conn);
+        test_db.db.close().await;
+    }
+
+    #[tokio::test]
+    async fn composition_fallback_sources_projected_only_when_primary_is_non_fetchable() {
+        let test_db = open_test_db().await;
+        with_write_tx(test_db.db.writer(), TxOptions::default(), |conn, _ctx| {
+            Box::pin(async move {
+                sqlx::query(
+                    "INSERT INTO novel (id, plugin_id, source_novel_id, path, name, in_library) \
+                     VALUES (1, 'source-b', 'work-b', '/work-b', 'Composed Work', 1)",
+                )
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+                sqlx::query(
+                    "INSERT INTO chapter (id, novel_id, path, name, chapter_number, position) VALUES \
+                     (11, 1, 'norea-composed:ch-1', 'Chapter 1', '1', 1), \
+                     (12, 1, 'norea-composed:ch-2', 'Chapter 2', '2', 2), \
+                     (13, 1, 'norea-composed:ch-3', 'Chapter 3', '3', 3)",
+                )
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+
+                let snapshot = |plugin_id: &str, novel_id: &str, novel_path: &str, chapter_path: &str, num: &str| {
+                    ChapterSourceSnapshotDto {
+                        plugin_id: plugin_id.to_string(),
+                        novel_id: novel_id.to_string(),
+                        novel_path: novel_path.to_string(),
+                        chapter_path: chapter_path.to_string(),
+                        source_chapter_id: None,
+                        chapter_number: Some(num.to_string()),
+                        name: format!("Chapter {num}"),
+                        position: num.parse().unwrap(),
+                        page: "1".to_string(),
+                        content_type: "html".to_string(),
+                        release_time: None,
+                    }
+                };
+
+                let composition = ChapterCompositionV1Dto {
+                    version: 1,
+                    updated_at: 2000,
+                    entries: vec![
+                        // Primary is norea-folder:1 with a non-fetchable sibling and two fetchable fallbacks.
+                        ChapterCompositionEntryDto {
+                            id: "entry-1".to_string(),
+                            path: "norea-composed:ch-1".to_string(),
+                            storage_chapter_number: "1".to_string(),
+                            sources: vec![
+                                snapshot("source-a", "work-a", "/work-a", "norea-folder:1", "1"),
+                                snapshot("source-a", "work-a", "/work-a", "norea-composed:legacy-1", "1"),
+                                snapshot("source-b", "work-b", "/work-b", "/work-b/ch-1", "1"),
+                                snapshot("source-c", "work-c", "/work-c", "/work-c/ch-1", "1"),
+                            ],
+                            primary_source: 0,
+                            user: ChapterCompositionUserDto {
+                                included: true,
+                                order: 1,
+                                name: None,
+                                chapter_number: Some("1".to_string()),
+                            },
+                        },
+                        // Primary is fetchable: fallback sources must not be projected.
+                        ChapterCompositionEntryDto {
+                            id: "entry-2".to_string(),
+                            path: "norea-composed:ch-2".to_string(),
+                            storage_chapter_number: "2".to_string(),
+                            sources: vec![
+                                snapshot("source-a", "work-a", "/work-a", "/work-a/ch-2", "2"),
+                                snapshot("source-b", "work-b", "/work-b", "/work-b/ch-2", "2"),
+                            ],
+                            primary_source: 0,
+                            user: ChapterCompositionUserDto {
+                                included: true,
+                                order: 2,
+                                name: None,
+                                chapter_number: Some("2".to_string()),
+                            },
+                        },
+                        // Primary is norea-folder:3 with no fetchable secondary sources.
+                        ChapterCompositionEntryDto {
+                            id: "entry-3".to_string(),
+                            path: "norea-composed:ch-3".to_string(),
+                            storage_chapter_number: "3".to_string(),
+                            sources: vec![
+                                snapshot("source-a", "work-a", "/work-a", "norea-folder:3", "3"),
+                                snapshot(LOCAL_PLUGIN_ID, "local-1", "/local", "/local/ch-3", "3"),
+                            ],
+                            primary_source: 0,
+                            user: ChapterCompositionUserDto {
+                                included: true,
+                                order: 3,
+                                name: None,
+                                chapter_number: Some("3".to_string()),
+                            },
+                        },
+                    ],
+                };
+                set_chapter_composition_in_tx(conn, 1, Some(&composition)).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+
+        let mut reader_conn = test_db.db.reader().acquire().await.unwrap();
+        let chapters = list_chapters_by_novel_in_conn(&mut reader_conn, 1)
+            .await
+            .unwrap();
+        assert_eq!(chapters.len(), 3);
+
+        // Chapter 1: primary stays norea-folder:1; fetchable fallbacks are projected in order.
+        assert_eq!(
+            chapters[0].composition_source.as_ref().map(|s| s.chapter_path.as_str()),
+            Some("norea-folder:1")
+        );
+        let fallbacks = chapters[0]
+            .composition_fallback_sources
+            .as_ref()
+            .expect("expected fetchable fallback sources");
+        assert_eq!(fallbacks.len(), 2);
+        assert_eq!(fallbacks[0].plugin_id, "source-b");
+        assert_eq!(fallbacks[0].chapter_path, "/work-b/ch-1");
+        assert_eq!(fallbacks[1].plugin_id, "source-c");
+        assert_eq!(fallbacks[1].chapter_path, "/work-c/ch-1");
+
+        // get_chapter_by_id projects the exact same fallback sources.
+        let single = get_chapter_by_id_in_conn(&mut reader_conn, 11)
+            .await
+            .unwrap()
+            .expect("chapter 11 should exist");
+        assert_eq!(single.composition_fallback_sources, chapters[0].composition_fallback_sources);
+
+        // Chapter 2: fetchable primary -> no fallback sources projected.
+        assert_eq!(
+            chapters[1].composition_source.as_ref().map(|s| s.chapter_path.as_str()),
+            Some("/work-a/ch-2")
+        );
+        assert!(chapters[1].composition_fallback_sources.is_none());
+
+        // Chapter 3: non-fetchable primary with only local sibling -> no fallback sources projected.
+        assert_eq!(
+            chapters[2].composition_source.as_ref().map(|s| s.chapter_path.as_str()),
+            Some("norea-folder:3")
+        );
+        assert!(chapters[2].composition_fallback_sources.is_none());
+
         drop(reader_conn);
         test_db.db.close().await;
     }

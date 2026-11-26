@@ -44,9 +44,22 @@ it("collects the VPN ranges whose paused chapters belong to a group", () => {
 
 it("separates chapters a content-server work lacks from other content failures", () => {
   const missing = { messageSummary: "This chapter is not on the content server." };
-  const attention = chapterDownloadFailureAttention([row(1), row(2, missing), row(3, missing)]);
+  const missingNoSource = {
+    messageSummary: "This chapter is not on the content server, and no original source is available.",
+  };
+  const attention = chapterDownloadFailureAttention([
+    row(1),
+    row(2, missing),
+    row(3, missing),
+    row(4, missingNoSource),
+    row(5, missingNoSource),
+  ]);
   expect(attention.groups.map((group) => [group.serverMissing, group.action, group.chapterIds]))
-    .toEqual([[false, "retry", [1]], [true, "retry", [2, 3]]]);
+    .toEqual([
+      [false, "retry", [1]],
+      [true, "retry", [2, 3]],
+      [true, "none", [4, 5]],
+    ]);
 });
 
 it("groups legacy transient incomplete-media rows as media-incomplete with repair action", () => {

@@ -1,5 +1,10 @@
 import type { StoredChapterDownloadFailure } from "../../db/queries/chapter-download-failure";
-import { isIncompleteMediaFailure, isServerChapterMissingFailure, type DownloadFailureClass } from "./download-failure";
+import {
+  isIncompleteMediaFailure,
+  isServerChapterMissingFailure,
+  isServerChapterMissingWithoutSourceFailure,
+  type DownloadFailureClass,
+} from "./download-failure";
 
 export interface VpnFailureRange {
   planId: string;
@@ -10,8 +15,8 @@ export interface ChapterDownloadFailureGroup {
   key: string;
   pluginId: string;
   failureClass: DownloadFailureClass;
-  action: "retry" | "repair" | "verify";
-  /** Chapters a content-server work lacks; retrying them downloads from the source. */
+  action: "retry" | "repair" | "verify" | "none";
+  /** Chapters a content-server work lacks; retrying them downloads from the source when available. */
   serverMissing: boolean;
   chapterIds: number[];
   /** Chapters owned by VPN ranges; retrying them resumes their range instead of queueing a direct download. */
@@ -59,13 +64,26 @@ export function chapterDownloadFailureAttention(
         ? "media-incomplete"
         : row.failureClass;
     const host = failureClass === "challenge" ? challengeHost(row.challengeUrl) : "";
-    const serverMissing = isServerChapterMissingFailure(row.messageSummary);
-    const key = JSON.stringify(serverMissing ? [row.pluginId, failureClass, host, "server-missing"] : [row.pluginId, failureClass, host]);
+    const serverMissingNoSource = isServerChapterMissingWithoutSourceFailure(row.messageSummary);
+    const serverMissing = serverMissingNoSource || isServerChapterMissingFailure(row.messageSummary);
+    const key = JSON.stringify(
+      serverMissingNoSource
+        ? [row.pluginId, failureClass, host, "server-missing-no-source"]
+        : serverMissing
+          ? [row.pluginId, failureClass, host, "server-missing"]
+          : [row.pluginId, failureClass, host],
+    );
     let group = groups.get(key);
     if (!group) {
       group = {
         key, pluginId: row.pluginId, failureClass,
-        action: failureClass === "challenge" ? "verify" : failureClass === "media-incomplete" ? "repair" : "retry",
+        action: serverMissingNoSource
+          ? "none"
+          : failureClass === "challenge"
+            ? "verify"
+            : failureClass === "media-incomplete"
+              ? "repair"
+              : "retry",
         serverMissing,
         chapterIds: [], vpnRanges: [], challengeUrl: row.challengeUrl, challengeHost: host, latestSummary: row.messageSummary, updatedAt: row.updatedAt,
       };

@@ -13,6 +13,10 @@ import { ContentServerError, ContentServerTransportError } from "../content-sync
 import { createServerChapterMediaFetcher } from "../content-sync/media-repair";
 import { recordChapterSourceDownload } from "../content-sync/deletion-exclusions";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
+import {
+  isFetchableCompositionSource,
+  resolveFetchableCompositionSource,
+} from "../chapter-composition";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
 import {
   ChapterStorageError,
@@ -28,7 +32,10 @@ import {
   recordFailedChapterDownloadAttempt,
   refreshChapterDownloadFailures,
 } from "./chapter-download-failures";
-import { isServerChapterMissingFailure } from "./download-failure";
+import {
+  isServerChapterMissingFailure,
+  isServerChapterMissingWithoutSourceFailure,
+} from "./download-failure";
 import type { ChapterDownloadPhase, TaskRunContext } from "./task-types";
 import type { VpnDownloadWorkerRef } from "./vpn-download-types";
 import { vpnDownloadExecutor } from "./vpn-worker-context";
@@ -1143,17 +1150,20 @@ function chapterDownloadStorageJob<T extends Pick<ChapterDownloadJob, "chapterPa
 
 /** Keep the local owner intact while selecting the original source recorded by composition. */
 function chapterDownloadSourceJob<T extends Pick<ChapterDownloadJob, "pluginId" | "chapterPath" | "pluginName" | "novelPath" | "contentType">>(
-  job: T, chapter: Pick<ChapterRow, "path" | "compositionSource">,
+  job: T, chapter: Pick<ChapterRow, "path" | "compositionSource" | "compositionFallbackSources">,
 ): T {
   const current = chapterDownloadStorageJob(job, chapter.path);
-  const source = chapter.compositionSource;
-  if (!source) {
+  const primary = chapter.compositionSource;
+  if (!primary) {
     if (current.chapterPath.startsWith("norea-composed:")) {
       throw new Error("The composed chapter's original source metadata is missing.");
     }
     return current;
   }
-  if (source.chapterPath.startsWith(RECOVERED_CHAPTER_PATH_PREFIX) || source.chapterPath.startsWith("norea-composed:")) {
+  const source = isFetchableCompositionSource(primary)
+    ? primary
+    : resolveFetchableCompositionSource(chapter, (pluginId) => Boolean(pluginManager.getPlugin(pluginId)));
+  if (!source) {
     throw new Error("The composed chapter has no original source chapter path.");
   }
   return { ...current, pluginId: source.pluginId,
@@ -1167,16 +1177,21 @@ async function canFallbackChapterDownloadToSource(
   signal: AbortSignal,
 ): Promise<boolean> {
   if (chapter.compositionSource) {
-    if (
-      chapter.compositionSource.chapterPath.startsWith(RECOVERED_CHAPTER_PATH_PREFIX) ||
-      chapter.compositionSource.chapterPath.startsWith("norea-composed:")
-    ) {
+    const primaryFetchable = isFetchableCompositionSource(chapter.compositionSource);
+    const hasFetchableFallback = Boolean(
+      chapter.compositionFallbackSources?.some(isFetchableCompositionSource),
+    );
+    if (!primaryFetchable && !hasFetchableFallback) {
       return false;
     }
     if (isTauriRuntime()) {
       await abortableStep(signal, pluginManager.loadInstalledFromDb());
     }
-    return Boolean(pluginManager.getPlugin(chapter.compositionSource.pluginId));
+    return Boolean(
+      resolveFetchableCompositionSource(chapter, (pluginId) =>
+        Boolean(pluginManager.getPlugin(pluginId)),
+      ),
+    );
   }
   if (ownerPluginId === LOCAL_PLUGIN_ID) return false;
   const novel = await withChapterStorageOperation("Read chapter novel", () => getNovelById(chapter.novelId));
@@ -1258,11 +1273,14 @@ async function resolveChapterDownloadSourceAccessUrl(
 ): Promise<string> {
   const chapter = await withChapterStorageOperation("Read chapter state", () => getChapterById(job.id));
   if (!chapter) throw missingLocalChapterError(job);
-  const sourceJob = chapterDownloadSourceJob(job, chapter);
   if (isTauriRuntime()) await pluginManager.loadInstalledFromDb();
+  const sourceJob = chapterDownloadSourceJob(job, chapter);
   const plugin = pluginManager.getPluginForExecutor(sourceJob.pluginId, "immediate");
   const contentType = normalizeChapterContentType(
-    chapter.compositionSource?.contentType ?? chapter.sourceContentType ?? job.contentType ?? chapter.contentType,
+    (chapter.compositionSource ? sourceJob.contentType : undefined) ??
+      chapter.sourceContentType ??
+      job.contentType ??
+      chapter.contentType,
   );
   const acquisitionPlan = validateChapterAcquisitionPlan(
     plugin.getChapterAcquisitionPlan(sourceJob.chapterPath, contentType),
@@ -1400,7 +1418,9 @@ function enqueueChapterDownloadForExecutor(
               ) {
                 return false;
               }
-              serverChapterMissing = isServerChapterMissingFailure(error);
+              serverChapterMissing =
+                isServerChapterMissingFailure(error) &&
+                !isServerChapterMissingWithoutSourceFailure(error);
               throw error;
             }
           };
@@ -1411,6 +1431,13 @@ function enqueueChapterDownloadForExecutor(
             return { handled: true, value: undefined };
           }
           signal.throwIfAborted();
+          if (
+            chapter.compositionSource &&
+            !isFetchableCompositionSource(chapter.compositionSource) &&
+            isTauriRuntime()
+          ) {
+            await abortableStep(signal, pluginManager.loadInstalledFromDb());
+          }
           sourceJob = chapterDownloadSourceJob(job, chapter);
           sourcePluginId = sourceJob.pluginId;
           downloadRecovery.setSource(sourceJob);
@@ -1465,7 +1492,10 @@ function enqueueChapterDownloadForExecutor(
           chapter = refreshed;
         }
         const contentType = normalizeChapterContentType(
-          chapter.compositionSource?.contentType ?? chapter.sourceContentType ?? job.contentType ?? chapter.contentType,
+          (chapter.compositionSource ? sourceJob.contentType : undefined) ??
+            chapter.sourceContentType ??
+            job.contentType ??
+            chapter.contentType,
         );
         const acquisitionPlan = validateChapterAcquisitionPlan(
           plugin.getChapterAcquisitionPlan(sourceJob.chapterPath, contentType),
@@ -1883,11 +1913,15 @@ function failedChapterMediaRepairJob(jobJson: string): ChapterMediaRepairJob | n
 /** Manual "Retry all": clears the recorded failures and queues each chapter for an explicit attempt. */
 export async function retryFailedChapterDownloads(chapterIds: readonly number[]): Promise<number> {
   const wanted = new Set(chapterIds);
-  const failures = getChapterDownloadFailureSnapshot().filter((row) => wanted.has(row.chapterId));
+  const failures = getChapterDownloadFailureSnapshot().filter(
+    (row) => wanted.has(row.chapterId) && !isServerChapterMissingWithoutSourceFailure(row.messageSummary),
+  );
   const jobs = failures
     .map((row) => {
       const job = failedChapterDownloadJob(row.jobJson);
-      return job && isServerChapterMissingFailure(row.messageSummary) ? { ...job, sourceFallback: true as const } : job;
+      return job && isServerChapterMissingFailure(row.messageSummary)
+        ? { ...job, sourceFallback: true as const }
+        : job;
     })
     .filter((job): job is ChapterDownloadJob => job !== null);
   const repairJobs = failures
@@ -2192,6 +2226,13 @@ export function enqueueChapterMediaRepair(
           if (!chapter) throw missingRepairChapterError(job);
           recordedChapter = chapter;
           sourceChapter = chapter;
+          if (
+            chapter.compositionSource &&
+            !isFetchableCompositionSource(chapter.compositionSource) &&
+            isTauriRuntime()
+          ) {
+            await abortableStep(attemptContext.signal, pluginManager.loadInstalledFromDb());
+          }
           sourceJob = chapterDownloadSourceJob({ ...job, chapterPath: chapter.path }, chapter);
           sourcePluginId = sourceJob.pluginId;
           downloadRecovery.setSource(sourceJob);
