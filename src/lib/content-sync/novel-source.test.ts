@@ -98,7 +98,11 @@ it("falls back automatically for a bound server work with an installed plugin un
     .rejects.toMatchObject({ code: "content-server-chapter-missing", message: "This chapter is not on the content server." });
   vi.mocked(pluginManager.getPlugin).mockReturnValue(undefined);
   await expect(tryDownloadServerChapter(job))
-    .rejects.toMatchObject({ code: "content-server-chapter-missing", message: "This chapter is not on the content server." });
+    .rejects.toMatchObject({
+      code: "content-server-chapter-missing",
+      sourceUnavailable: true,
+      message: "This chapter is not on the content server, and no original source is available.",
+    });
   expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
 });
 
@@ -271,7 +275,127 @@ describe("recovered folder chapters", () => {
     vi.mocked(getNovelById).mockResolvedValue(novel as never);
     vi.mocked(pluginManager.getPlugin).mockReturnValue(plugin as never);
     vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
-    await expect(tryDownloadServerChapter(folderJob)).rejects.toMatchObject({ code: "content-server-chapter-missing" });
+    await expect(tryDownloadServerChapter(folderJob)).rejects.toMatchObject({
+      code: "content-server-chapter-missing",
+      sourceUnavailable: true,
+    });
+  });
+});
+
+describe("composed chapters with non-fetchable primary source", () => {
+  const composedJob = {
+    id: 7,
+    novelId: 3,
+    pluginId: "source-b",
+    chapterPath: "norea-composed:entry-7",
+  };
+  const folderPrimary = {
+    pluginId: "source-a",
+    novelId: "work-a",
+    novelPath: "/novel/a",
+    chapterPath: "norea-folder:7",
+    chapterNumber: "7",
+    name: "Folder seven",
+    position: 7,
+    page: "1",
+    contentType: "html" as const,
+    releaseTime: null,
+  };
+  const secondarySource = {
+    pluginId: "source-b",
+    novelId: "work-b",
+    novelPath: "/novel/b",
+    chapterPath: "/novel/b/chapter-7",
+    chapterNumber: "7",
+    name: "Source B seven",
+    position: 7,
+    page: "1",
+    contentType: "html" as const,
+    releaseTime: null,
+  };
+
+  beforeEach(async () => {
+    vi.mocked(getNovelById).mockResolvedValue({
+      id: 3,
+      pluginId: "source-b",
+      path: "/novel/b",
+      name: "Composed work",
+    } as never);
+    await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work-b" });
+  });
+
+  it("falls back to an installed fetchable secondary source on 404 when primarySource is norea-folder:*", async () => {
+    vi.mocked(getChapterById).mockResolvedValue({
+      id: 7,
+      novelId: 3,
+      path: "norea-composed:entry-7",
+      chapterNumber: "7",
+      position: 7,
+      compositionSource: folderPrimary,
+      compositionFallbackSources: [secondarySource],
+    } as never);
+    vi.mocked(pluginManager.getPlugin).mockImplementation((id) =>
+      id === "source-b" ? ({ id: "source-b" } as never) : undefined,
+    );
+    vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
+
+    expect(await tryDownloadServerChapter(composedJob)).toBe(false);
+  });
+
+  it("throws ServerChapterMissingError with sourceUnavailable when no secondary source is fetchable or installed", async () => {
+    vi.mocked(getChapterById).mockResolvedValue({
+      id: 7,
+      novelId: 3,
+      path: "norea-composed:entry-7",
+      chapterNumber: "7",
+      position: 7,
+      compositionSource: folderPrimary,
+    } as never);
+    vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-b" } as never);
+    vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
+
+    await expect(tryDownloadServerChapter(composedJob)).rejects.toMatchObject({
+      code: "content-server-chapter-missing",
+      sourceUnavailable: true,
+    });
+
+    vi.mocked(getChapterById).mockResolvedValue({
+      id: 7,
+      novelId: 3,
+      path: "norea-composed:entry-7",
+      chapterNumber: "7",
+      position: 7,
+      compositionSource: folderPrimary,
+      compositionFallbackSources: [secondarySource],
+    } as never);
+    vi.mocked(pluginManager.getPlugin).mockReturnValue(undefined);
+    vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
+
+    await expect(tryDownloadServerChapter(composedJob)).rejects.toMatchObject({
+      code: "content-server-chapter-missing",
+      sourceUnavailable: true,
+    });
+  });
+
+  it("does not silently switch plugins when a fetchable primarySource plugin is uninstalled", async () => {
+    vi.mocked(getChapterById).mockResolvedValue({
+      id: 7,
+      novelId: 3,
+      path: "norea-composed:entry-7",
+      chapterNumber: "7",
+      position: 7,
+      compositionSource: { ...folderPrimary, chapterPath: "/novel/a/chapter-7" },
+      compositionFallbackSources: [secondarySource],
+    } as never);
+    vi.mocked(pluginManager.getPlugin).mockImplementation((id) =>
+      id === "source-b" ? ({ id: "source-b" } as never) : undefined,
+    );
+    vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
+
+    await expect(tryDownloadServerChapter(composedJob)).rejects.toMatchObject({
+      code: "content-server-chapter-missing",
+      sourceUnavailable: true,
+    });
   });
 });
 

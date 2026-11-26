@@ -36,6 +36,8 @@ export interface ChapterRow {
   /** User-facing number in a composed list; chapterNumber remains the package key. */
   displayChapterNumber?: string | null;
   compositionSource?: ChapterSourceSnapshot;
+  /** Fetchable secondary composition sources, projected only when compositionSource is non-fetchable. */
+  compositionFallbackSources?: ChapterSourceSnapshot[];
   position: number;
   page: string;
   bookmark: boolean;

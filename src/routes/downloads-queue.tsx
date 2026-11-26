@@ -65,8 +65,10 @@ import {
   isChapterMediaVerificationFailure,
   isIncompleteMediaFailure,
   isServerChapterMissingFailure,
+  isServerChapterMissingWithoutSourceFailure,
 } from "../lib/tasks/download-failure";
 import { chapterDownloadFailureAttention } from "../lib/tasks/chapter-download-failure-attention";
+import { forgetChapterDownloadFailures } from "../lib/tasks/chapter-download-failures";
 import { cancelChapterDownloadRequest } from "../lib/tasks/chapter-download-requests";
 import {
   useChapterDownloadFailureSnapshot,
@@ -106,6 +108,7 @@ const ATTENTION_FOCUS_TIMEOUT_MS = 3_000;
 const ACTIVE_STATUSES = new Set<TaskStatus>(["queued", "running"]);
 
 function taskErrorSummaryKey(error: string, kind: TaskRecord["kind"]): TranslationKey {
+  if (isServerChapterMissingWithoutSourceFailure(error)) return "tasks.error.serverMissingNoSource";
   if (isServerChapterMissingFailure(error)) return "tasks.error.serverMissing";
   const key = userFacingErrorKey(error);
   if (key === "errors.forbidden" || key === "errors.siteAccess") return key;
@@ -974,18 +977,17 @@ function NovelWorkGroup({
 
 /** Whether any Needs attention line has something to show, from the same state each line reads. */
 function useHasDownloadAttention(
-  active: boolean,
+  hasPersistedFailures: boolean,
   vpn: ReturnType<typeof useVpnDownloadRuntimeSnapshot>,
   ordinaryBlocks: readonly SourceAccessBlock[],
   snapshot: TaskSnapshot,
 ): boolean {
-  const failures = useChapterDownloadFailureSnapshot(active);
   const { pause } = useSyncExternalStore(subscribeDownloadGoalPause, getDownloadGoalPauseSnapshot, getDownloadGoalPauseSnapshot);
   const backupFolderUnavailable = useBackupFolderUnavailable();
   const vpnItem = vpn.loading ? null : vpnDownloadAttention(vpn.plans, vpn.run?.status);
   const failureStops = snapshot.downloadFailureStops;
   return ordinaryBlocks.length > 0 || Boolean(failureStops?.globalError) || Object.keys(failureStops?.sourceErrors ?? {}).length > 0 ||
-    pause !== null || vpnItem !== null || backupFolderUnavailable || chapterDownloadFailureAttention(failures).groups.length > 0;
+    pause !== null || vpnItem !== null || backupFolderUnavailable || hasPersistedFailures;
 }
 
 function NeedsAttentionSection({
@@ -1139,6 +1141,11 @@ export function DownloadsQueueView({
   const snapshot = useTaskSnapshot(active);
   const vpn = useVpnDownloadRuntimeSnapshot(active);
   const requests = useChapterDownloadRequestSnapshot(active);
+  const persistedFailures = useChapterDownloadFailureSnapshot(active);
+  const attentionFailureIds = useMemo(
+    () => chapterDownloadFailureAttention(persistedFailures).groups.flatMap((group) => group.chapterIds),
+    [persistedFailures],
+  );
   const { pause: goalPause } = useSyncExternalStore(subscribeDownloadGoalPause, getDownloadGoalPauseSnapshot, getDownloadGoalPauseSnapshot);
   const [queueActionPending, setQueueActionPending] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
@@ -1179,7 +1186,7 @@ export function DownloadsQueueView({
   const allPaused = hasVpnRun ? (vpn.run?.status === "paused" || vpn.run?.status === "interrupted") &&
     (!activeDownloadWorkTasks.length || snapshot.sourceQueuesPaused) : snapshot.sourceQueuesPaused;
   const ordinaryBlocks = snapshot.sourceAccessBlocks.filter(block => !block.rangeId);
-  const hasAttention = useHasDownloadAttention(active, vpn, ordinaryBlocks, snapshot);
+  const hasAttention = useHasDownloadAttention(attentionFailureIds.length > 0, vpn, ordinaryBlocks, snapshot);
   useAttentionFocus(active, hasAttention, attentionRef);
   const taskStats = useMemo(() => {
     const count = (status: TaskRecord["status"]) =>
@@ -1307,8 +1314,19 @@ export function DownloadsQueueView({
     });
   };
   const overflowItems: OverflowMenuItem[] = [
-    { icon: TrashIcon, label: t("tasks.clearErrors"), disabled: taskStats.failed === 0,
-      onClick: () => taskScheduler.clearFailedTasks() },
+    {
+      icon: TrashIcon,
+      label: t("tasks.clearErrors"),
+      disabled: (taskStats.failed === 0 && attentionFailureIds.length === 0) || queueActionPending,
+      onClick: () => {
+        void runQueueAction(async () => {
+          taskScheduler.clearFailedTasks();
+          if (attentionFailureIds.length > 0) {
+            await forgetChapterDownloadFailures(attentionFailureIds);
+          }
+        });
+      },
+    },
   ];
   if (vpn.capabilities.supported && !hasVpnRun) {
     overflowItems.push({ icon: VpnIcon, label: t("vpnDownload.launchMenu"), onClick: () => setVpnLaunchOpened(true) });

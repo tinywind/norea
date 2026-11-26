@@ -39,7 +39,7 @@ const STORAGE_FAILURE =
 const CHAPTER_MEDIA_VERIFICATION_FAILURE =
   /chapter media: (?:media archive finalization incomplete:|media manifest is missing\b|a valid manifest is required for repair\b)|Cannot read chapter media manifest\.|Chapter media manifest is (?:invalid|missing asset:)|Cannot repair media asset without a source URL:/i;
 const CONTENT_FAILURE =
-  /^(?:chapter-download: local chapter \d+ was not found|chapter-media-repair: local chapter \d+ was not found|Chapter acquisition |Plugin must declare a resource acquisition plan|content-not-found:)|This chapter is not on the content server, and its source has no matching chapter\.|Downloaded chapter metadata is missing\.|Server chapter novel ID does not match the local work\.|Content server (?:chapter|repair chapter) no longer exists locally\.|Content server (?:download|repair|media) identity does not match /i;
+  /^(?:chapter-download: local chapter \d+ was not found|chapter-media-repair: local chapter \d+ was not found|Chapter acquisition |Plugin must declare a resource acquisition plan|content-not-found:)|This chapter is not on the content server, and its source has no matching chapter\.|The composed chapter(?:'s original source metadata is missing| has no original source chapter path)\.|Downloaded chapter metadata is missing\.|Server chapter novel ID does not match the local work\.|Content server (?:chapter|repair chapter) no longer exists locally\.|Content server (?:download|repair|media) identity does not match /i;
 /** The source site now lives at another address; retrying the old one cannot succeed. */
 const SOURCE_SITE_MOVED = /; the page moved to \S+, outside the source site /;
 /** The source served text its plugin marks as substitute content, so later chapters would be refused too. */
@@ -48,20 +48,34 @@ const MANUAL_ACTION_REQUIRED = /manual-action-required:/i;
 const INCOMPLETE_MEDIA_SUMMARY = /^(?:HTTP 404: )?Offline download is incomplete:/i;
 const PLUGIN_PARSE_ERROR_NAMES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError"]);
 const SERVER_CHAPTER_MISSING = "This chapter is not on the content server.";
+const SERVER_CHAPTER_MISSING_NO_SOURCE =
+  "This chapter is not on the content server, and no original source is available.";
 
 /** A content-server work lacks this chapter's body; only an explicit retry may continue to the source. */
 export class ServerChapterMissingError extends Error {
   readonly code = "content-server-chapter-missing";
+  readonly sourceUnavailable: boolean;
 
-  constructor() {
-    super(SERVER_CHAPTER_MISSING);
+  constructor(options?: { sourceUnavailable?: boolean }) {
+    const sourceUnavailable = Boolean(options?.sourceUnavailable);
+    super(sourceUnavailable ? SERVER_CHAPTER_MISSING_NO_SOURCE : SERVER_CHAPTER_MISSING);
     this.name = "ServerChapterMissingError";
+    this.sourceUnavailable = sourceUnavailable;
   }
 }
 
 /** Recognizes the error, a task's error text, or a stored failure summary. */
 export function isServerChapterMissingFailure(error: unknown): boolean {
-  return describeError(error) === SERVER_CHAPTER_MISSING;
+  const message = describeError(error);
+  return message === SERVER_CHAPTER_MISSING || message === SERVER_CHAPTER_MISSING_NO_SOURCE;
+}
+
+/** Recognizes a server-missing chapter failure where no installed original source can fetch the chapter. */
+export function isServerChapterMissingWithoutSourceFailure(error: unknown): boolean {
+  if (error instanceof ServerChapterMissingError) {
+    return error.sourceUnavailable;
+  }
+  return describeError(error) === SERVER_CHAPTER_MISSING_NO_SOURCE;
 }
 
 /** Recognizes an incomplete-media error, task error text, or stored failure summary. */

@@ -4517,6 +4517,133 @@ describe("composed chapter source routing", () => {
     } finally { scheduler.cancelActiveTasks({ discardQueued: true }); await waitForChapterDownloadQueueMutations(); }
   });
 
+  it("falls back to an installed fetchable secondary source when the composed primary source is a folder snapshot", async () => {
+    const folderPrimary = {
+      pluginId: "local", novelId: "folder-1", novelPath: "norea-folder:1", chapterPath: "norea-folder:1/ch-7.epub",
+      chapterNumber: "7", name: "Folder seven", position: 7, page: "1", contentType: "html" as const, releaseTime: null,
+    };
+    const secondary = { ...original, pluginId: "source-c", chapterPath: "/secondary/c/chapter-7", contentType: "epub" as const };
+    fixture(folderPrimary, targetJob);
+    const chapter = await getChapterById(7);
+    vi.mocked(getChapterById).mockResolvedValue({ ...chapter, compositionFallbackSources: [secondary] } as never);
+    const plugin = (id: string) => id === "source-c"
+      ? { id, name: "Source C", apiVersion: "0.2", getBaseUrl: () => "https://secondary.test",
+          getChapterAcquisitionPlan: pluginMocks.getChapterAcquisitionPlan, getChapterResource: pluginMocks.getChapterResource,
+          imageRequestInit: { headers: { Referer: "https://secondary.test/" } } }
+      : undefined;
+    pluginMocks.getPlugin.mockImplementation(plugin);
+    pluginMocks.getPluginForExecutor.mockImplementation(plugin);
+    pluginMocks.getChapterResource.mockResolvedValue({
+      type: "binary", contentType: "epub", mediaType: "application/epub+zip", bytes: new Uint8Array([1, 2]), byteLength: 2,
+    });
+    const run = context();
+    enqueueChapterDownload(targetJob);
+    await capturedSpec!.run(run);
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-c", "pool:0");
+    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(secondary.chapterPath, "epub");
+    expect(storeEmbeddedChapterMedia).toHaveBeenCalledWith(expect.objectContaining({
+      chapterId: 7, chapterNumber: "801", sourceId: "source-b", sourceNovelId: "work-b", novelId: 11,
+    }));
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, expect.any(String), "epub", expect.any(Object));
+    expect(run.tryStartSourceAccess).toHaveBeenCalledWith(expect.objectContaining({ source: { id: "source-c", name: "source-c" } }));
+  });
+
+  it("picks the first installed secondary source when an earlier secondary plugin is not installed", async () => {
+    const folderPrimary = {
+      pluginId: "source-a", novelId: "folder-1", novelPath: "norea-folder:1", chapterPath: "norea-folder:1/ch-7.html",
+      chapterNumber: "7", name: "Folder seven", position: 7, page: "1", contentType: "html" as const, releaseTime: null,
+    };
+    const uninstalledSecondary = { ...original, pluginId: "source-missing", chapterPath: "/missing/chapter-7" };
+    const installedSecondary = { ...original, pluginId: "source-a", chapterPath: "/original/a/chapter-7" };
+    fixture(folderPrimary, targetJob);
+    const chapter = await getChapterById(7);
+    vi.mocked(getChapterById).mockResolvedValue({
+      ...chapter,
+      compositionFallbackSources: [uninstalledSecondary, installedSecondary],
+    } as never);
+    const plugin = (id: string) => id === "source-a"
+      ? { id, name: "Source A", apiVersion: "0.2", getBaseUrl: () => "https://original.test",
+          getChapterAcquisitionPlan: pluginMocks.getChapterAcquisitionPlan, getChapterResource: pluginMocks.getChapterResource,
+          imageRequestInit: { headers: { Referer: "https://original.test/" } } }
+      : undefined;
+    pluginMocks.getPlugin.mockImplementation(plugin);
+    pluginMocks.getPluginForExecutor.mockImplementation(plugin);
+    enqueueChapterDownload(targetJob);
+    await capturedSpec!.run(context());
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-a", "pool:0");
+    expect(pluginMocks.getChapterResource.mock.calls[0]![0]).toBe(installedSecondary.chapterPath);
+  });
+
+  it("repairs composed media via an installed secondary source when the primary source is a folder snapshot", async () => {
+    const folderPrimary = {
+      pluginId: "local", novelId: "folder-1", novelPath: "norea-folder:1", chapterPath: "norea-folder:1/ch-7.html",
+      chapterNumber: "7", name: "Folder seven", position: 7, page: "1", contentType: "html" as const, releaseTime: null,
+    };
+    fixture(folderPrimary, targetJob);
+    const chapter = await getChapterById(7);
+    vi.mocked(getChapterById).mockResolvedValue({ ...chapter, compositionFallbackSources: [original] } as never);
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValue('<p>Stored body</p><img src="/page.png">');
+    vi.mocked(cacheHtmlChapterMedia).mockImplementationOnce(async options => {
+      await options.fetchMissingMedia!({ fileName: "page.png", path: "media/page.png", sourceUrl: "https://original.test/page.png", bytes: 0, status: "remote", updatedAt: 1 }, options.signal);
+      return { html: "<p>Repaired</p>", mediaBytes: 3, mediaFailures: [], storedMediaCount: 1 };
+    });
+    const run = context();
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-b", title: "Repair folder-primary chapter" });
+    await capturedSpec!.run(run);
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-a", "pool:0");
+    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(expect.objectContaining({
+      baseUrl: `https://original.test${original.chapterPath}`, requestSourceId: "source-a",
+      sourceId: "source-b", sourceNovelId: "work-b", chapterNumber: "801",
+    }));
+  });
+
+  it("retries a serverMissing composed chapter through its installed secondary source when primary is a folder snapshot", async () => {
+    const folderPrimary = {
+      pluginId: "local", novelId: "folder-1", novelPath: "norea-folder:1", chapterPath: "norea-folder:1/ch-7.html",
+      chapterNumber: "7", name: "Folder seven", position: 7, page: "1", contentType: "html" as const, releaseTime: null,
+    };
+    fixture(folderPrimary, targetJob);
+    const chapter = await getChapterById(7);
+    vi.mocked(getChapterById).mockResolvedValue({ ...chapter, compositionFallbackSources: [original] } as never);
+    const { scheduler, handles } = await schedulerFixture();
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    failureMocks.snapshot.mockReturnValue([{
+      chapterId: 7, pluginId: "source-b", failureClass: "content",
+      messageSummary: "This chapter is not on the content server.",
+      attempts: 1, nextRetryAt: null, challengeUrl: null, updatedAt: 1, jobJson: JSON.stringify(targetJob),
+    }]);
+    const { retryFailedChapterDownloads } = await import("./chapter-download");
+    expect(await retryFailedChapterDownloads([7])).toBe(1);
+    try {
+      await handles.at(-1)!.promise;
+      expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-a", "pool:0");
+      expect(saveStoredChapterContent).toHaveBeenCalledWith(7, expect.any(String), "html", expect.any(Object));
+    } finally { scheduler.cancelActiveTasks({ discardQueued: true }); await waitForChapterDownloadQueueMutations(); }
+  });
+
+  it("rejects a folder-primary composed chapter with no fetchable secondary source and skips sourceUnavailable serverMissing retries", async () => {
+    const folderPrimary = {
+      pluginId: "local", novelId: "folder-1", novelPath: "norea-folder:1", chapterPath: "norea-folder:1/ch-7.html",
+      chapterNumber: "7", name: "Folder seven", position: 7, page: "1", contentType: "html" as const, releaseTime: null,
+    };
+    fixture(folderPrimary, targetJob);
+    const chapter = await getChapterById(7);
+    vi.mocked(getChapterById).mockResolvedValue({ ...chapter, compositionFallbackSources: undefined } as never);
+    enqueueChapterDownload(targetJob);
+    await expect(capturedSpec!.run(context())).rejects.toThrow("The composed chapter has no original source chapter path.");
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
+
+    failureMocks.snapshot.mockReturnValue([{
+      chapterId: 7, pluginId: "source-b", failureClass: "content",
+      messageSummary: "This chapter is not on the content server, and no original source is available.",
+      attempts: 1, nextRetryAt: null, challengeUrl: null, updatedAt: 1, jobJson: JSON.stringify(targetJob),
+    }]);
+    const { retryFailedChapterDownloads } = await import("./chapter-download");
+    expect(await retryFailedChapterDownloads([7])).toBe(0);
+  });
+
+
   it("forgets prior settled failed tasks for the same chapter when re-enqueuing download or repair", async () => {
     vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation((key) => {
       if (key === "chapter.download:7") {

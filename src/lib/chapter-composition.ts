@@ -165,3 +165,49 @@ export function getChapterCompositionDisplay(composition: ChapterCompositionV1, 
     position: entry.user.order,
   };
 }
+
+const NON_FETCHABLE_COMPOSITION_CHAPTER_PREFIXES = [
+  "norea-folder:",
+  "norea-composed:",
+] as const;
+
+export function isFetchableCompositionSource(
+  source: Pick<ChapterSourceSnapshot, "pluginId" | "chapterPath">,
+): boolean {
+  return (
+    source.pluginId !== "local" &&
+    !NON_FETCHABLE_COMPOSITION_CHAPTER_PREFIXES.some((prefix) =>
+      source.chapterPath.startsWith(prefix),
+    )
+  );
+}
+
+/**
+ * Selects a fetchable source snapshot for a composed chapter.
+ * Keeps primarySource whenever it is fetchable, and falls back to secondary
+ * composition sources only when primarySource is non-fetchable.
+ */
+export function resolveFetchableCompositionSource(
+  chapter: {
+    compositionSource?: ChapterSourceSnapshot;
+    compositionFallbackSources?: readonly ChapterSourceSnapshot[];
+  },
+  isPluginInstalled?: (pluginId: string) => boolean,
+): ChapterSourceSnapshot | null {
+  const primary = chapter.compositionSource;
+  if (!primary) return null;
+  if (isFetchableCompositionSource(primary)) {
+    return !isPluginInstalled || isPluginInstalled(primary.pluginId)
+      ? primary
+      : null;
+  }
+  const fallbacks = chapter.compositionFallbackSources;
+  if (!fallbacks?.length) return null;
+  for (const candidate of fallbacks) {
+    if (!isFetchableCompositionSource(candidate)) continue;
+    if (!isPluginInstalled || isPluginInstalled(candidate.pluginId)) {
+      return candidate;
+    }
+  }
+  return null;
+}

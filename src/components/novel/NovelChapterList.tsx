@@ -27,7 +27,10 @@ import { type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation, type TranslationKey } from "../../i18n";
 import { useLongPress } from "../../lib/use-long-press";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
-import { isServerChapterMissingFailure } from "../../lib/tasks/download-failure";
+import {
+  isServerChapterMissingFailure,
+  isServerChapterMissingWithoutSourceFailure,
+} from "../../lib/tasks/download-failure";
 import { type ChapterDownloadPhase } from "../../lib/tasks/task-types";
 import {
   normalizeFontScalePercent,
@@ -179,7 +182,10 @@ function ChapterListItem({
     status ?? (repairBusy ? { kind: "queued" } : undefined);
   const downloadActive = effectiveStatus?.kind === "queued" || effectiveStatus?.kind === "running";
   const failedMessage = effectiveStatus?.kind === "failed" ? effectiveStatus.error : null;
-  const serverMissingFailure = failedMessage !== null && isServerChapterMissingFailure(failedMessage);
+  const serverMissingNoSource =
+    failedMessage !== null && isServerChapterMissingWithoutSourceFailure(failedMessage);
+  const serverMissingFailure =
+    failedMessage !== null && isServerChapterMissingFailure(failedMessage) && !serverMissingNoSource;
   const longPress = useLongPress(reorderMode ? undefined : onExtendSelection, 450);
   const releaseTime = chapter.releaseTime
     ? normalizeDateText(chapter.releaseTime)
@@ -676,7 +682,11 @@ export function VirtualChapterList({
                 onDownload={() => {
                   const status = statuses.get(chapter.id);
                   const error = status?.kind === "failed" ? status.error : null;
-                  onDownload(chapter, error !== null, error !== null && isServerChapterMissingFailure(error));
+                  const retryFromSource =
+                    error !== null &&
+                    isServerChapterMissingFailure(error) &&
+                    !isServerChapterMissingWithoutSourceFailure(error);
+                  onDownload(chapter, error !== null, retryFromSource);
                 }}
                 onDeleteDownload={() => onDeleteDownload(chapter.id)}
                 onExtendSelection={() => onExtendSelection(chapter.id)}

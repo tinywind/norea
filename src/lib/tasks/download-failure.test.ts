@@ -7,7 +7,8 @@ import { SourceAccessRequiredError } from "../plugins/source-access";
 import { ContentServerError, ContentServerTransportError } from "../content-sync/client";
 import {
   automaticRetryDelayMs, classifyDownloadFailure, isChapterMediaVerificationFailure, isImmediateSourceStopFailure,
-  isIncompleteMediaFailure, isServerChapterMissingFailure, isSkippableIncompleteMediaFailure, isSourceForbiddenFailure, ServerChapterMissingError,
+  isIncompleteMediaFailure, isServerChapterMissingFailure, isServerChapterMissingWithoutSourceFailure,
+  isSkippableIncompleteMediaFailure, isSourceForbiddenFailure, ServerChapterMissingError,
 } from "./download-failure";
 
 const cdnChallenge = cloudflareAccessError(
@@ -122,10 +123,21 @@ describe("isServerChapterMissingFailure", () => {
   it("recognizes the error and its stored summary, but not a chapter the source also lacks", () => {
     const error = new ServerChapterMissingError();
     expect(isServerChapterMissingFailure(error)).toBe(true);
+    expect(isServerChapterMissingWithoutSourceFailure(error)).toBe(false);
     expect(classifyDownloadFailure(error)).toMatchObject({ failureClass: "content", summary: error.message });
     expect(isServerChapterMissingFailure(classifyDownloadFailure(error).summary)).toBe(true);
+    expect(isServerChapterMissingWithoutSourceFailure(classifyDownloadFailure(error).summary)).toBe(false);
+
+    const noSource = new ServerChapterMissingError({ sourceUnavailable: true });
+    expect(isServerChapterMissingFailure(noSource)).toBe(true);
+    expect(isServerChapterMissingWithoutSourceFailure(noSource)).toBe(true);
+    expect(classifyDownloadFailure(noSource)).toMatchObject({ failureClass: "content", summary: noSource.message });
+    expect(isServerChapterMissingWithoutSourceFailure(classifyDownloadFailure(noSource).summary)).toBe(true);
+
     expect(isServerChapterMissingFailure(new Error("This chapter is not on the content server, and its source has no matching chapter."))).toBe(false);
     expect(isServerChapterMissingFailure(new Error("webview_extract: timeout after 35000ms"))).toBe(false);
+    expect(classifyDownloadFailure(new Error("The composed chapter has no original source chapter path.")).failureClass).toBe("content");
+    expect(classifyDownloadFailure(new Error("The composed chapter's original source metadata is missing.")).failureClass).toBe("content");
   });
 });
 

@@ -39,6 +39,7 @@ import {
 import { remapUnattemptedChapterPathsInDb } from "./sql/user-state-migration";
 import { flushWorkMetadata, markWorkMetadataRefreshed } from "./sql/work-metadata";
 import {
+  isFetchableCompositionSource,
   parseChapterComposition,
   type ChapterSourceSnapshot,
 } from "../lib/chapter-composition";
@@ -192,6 +193,7 @@ async function withCompositionDisplay<
     T & {
       displayChapterNumber?: string | null;
       compositionSource?: ChapterSourceSnapshot;
+      compositionFallbackSources?: ChapterSourceSnapshot[];
     }
   >
 > {
@@ -207,7 +209,11 @@ async function withCompositionDisplay<
     number,
     Map<
       string,
-      { displayChapterNumber: string; compositionSource: ChapterSourceSnapshot }
+      {
+        displayChapterNumber: string;
+        compositionSource: ChapterSourceSnapshot;
+        compositionFallbackSources?: ChapterSourceSnapshot[];
+      }
     >
   >();
   for (const record of stored) {
@@ -218,14 +224,28 @@ async function withCompositionDisplay<
       new Map(
         composition.entries
           .filter((entry) => entry.user.included)
-          .map((entry) => [
-            entry.path,
-            {
-              displayChapterNumber:
-                entry.user.chapterNumber ?? String(entry.user.order),
-              compositionSource: entry.sources[entry.primarySource],
-            },
-          ]),
+          .map((entry) => {
+            const primary = entry.sources[entry.primarySource];
+            const fallbackSources =
+              primary && !isFetchableCompositionSource(primary)
+                ? entry.sources.filter(
+                    (source, index) =>
+                      index !== entry.primarySource &&
+                      isFetchableCompositionSource(source),
+                  )
+                : [];
+            return [
+              entry.path,
+              {
+                displayChapterNumber:
+                  entry.user.chapterNumber ?? String(entry.user.order),
+                compositionSource: primary,
+                ...(fallbackSources.length > 0
+                  ? { compositionFallbackSources: fallbackSources }
+                  : {}),
+              },
+            ];
+          }),
       ),
     );
   }
