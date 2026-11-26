@@ -35,15 +35,22 @@ const MAX_DNS_SERVERS: usize = 8;
 const TCP_BUFFER_BYTES: usize = 64 * 1024;
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const STREAM_CHUNK_BYTES: usize = 16 * 1024;
-const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
+const DIAL_TIMEOUT: Duration = Duration::from_secs(16);
 // Keep DNS lookup under Chromium/WebView's 10s proxy CONNECT timeout so the
 // local proxy records the DNS failure and replies 502 before WebView aborts.
 const DNS_LOOKUP_TIMEOUT: Duration = Duration::from_secs(8);
 const DNS_SERVER_HEDGE_DELAY: Duration = Duration::from_millis(1_500);
 const DNS_FAMILY_GRACE: Duration = Duration::from_millis(250);
-const TCP_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
+// Cap total TCP connect time across multi-IP answers below Chromium/WebView's
+// proxy CONNECT timeout so 502 and transport diagnostics arrive before WebView aborts.
+const TCP_DIAL_TIMEOUT: Duration = Duration::from_secs(9);
+const TCP_SINGLE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
+const TCP_MULTI_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(4_500);
 const TCP_IDLE_TIMEOUT: SmolDuration = SmolDuration::from_secs(5 * 60);
 const MAX_TIMER_DELAY: Duration = Duration::from_millis(100);
+const ZOMBIE_TUNNEL_TIMEOUT_THRESHOLD: u32 = 3;
+pub(super) const ZOMBIE_TUNNEL_ERROR: &str =
+    "VPN tunnel stopped carrying traffic (consecutive DNS/TCP timeouts)";
 
 pub(super) trait PacketSink: Send + Sync + 'static {
     fn send(&self, packet: &[u8]) -> bool;
@@ -154,6 +161,7 @@ struct Netstack {
     next_connection_id: u64,
     next_port: u16,
     started_at: StdInstant,
+    consecutive_dial_timeouts: u32,
 }
 
 struct ActiveDnsQuery {
@@ -273,7 +281,24 @@ impl Netstack {
             next_connection_id: 1,
             next_port,
             started_at: StdInstant::now(),
+            consecutive_dial_timeouts: 0,
         })
+    }
+
+    fn record_tunnel_liveness(&mut self) {
+        self.consecutive_dial_timeouts = 0;
+    }
+
+    fn record_dial_timeout(&mut self) -> Result<(), String> {
+        self.consecutive_dial_timeouts = self.consecutive_dial_timeouts.saturating_add(1);
+        if self.consecutive_dial_timeouts >= ZOMBIE_TUNNEL_TIMEOUT_THRESHOLD {
+            log::warn!(
+                "plugin VPN tunnel became unresponsive after {} consecutive DNS/TCP dial timeouts",
+                self.consecutive_dial_timeouts
+            );
+            return Err(ZOMBIE_TUNNEL_ERROR.to_string());
+        }
+        Ok(())
     }
 
     async fn run(mut self) -> Result<(), String> {
@@ -360,8 +385,9 @@ impl Netstack {
                 std::iter::once(address).collect(),
                 port,
                 reply,
-                StdInstant::now() + DIAL_TIMEOUT,
+                StdInstant::now() + TCP_DIAL_TIMEOUT,
                 None,
+                false,
             );
         }
 
@@ -487,6 +513,7 @@ impl Netstack {
 
     fn process_resolutions(&mut self) -> Result<(), String> {
         let mut pending = Vec::new();
+        let mut dial_timeouts = 0u32;
         for mut resolution in std::mem::take(&mut self.resolutions) {
             if resolution.reply.is_closed() {
                 self.cancel_queries(&resolution.queries);
@@ -541,12 +568,14 @@ impl Netstack {
                 && (active.is_empty() || grace_expired || now >= resolution.dns_deadline)
             {
                 self.cancel_queries(&active);
+                let tcp_deadline = (now + TCP_DIAL_TIMEOUT).min(resolution.dial_deadline);
                 self.start_tcp_candidates(
                     interleave_address_families(resolution.addresses),
                     resolution.port,
                     resolution.reply,
-                    resolution.dial_deadline,
+                    tcp_deadline,
                     None,
+                    false,
                 )?;
                 continue;
             }
@@ -573,6 +602,7 @@ impl Netstack {
                 let _ = resolution
                     .reply
                     .send(Err(ProxyConnectError::dns("VPN DNS lookup timed out")));
+                dial_timeouts = dial_timeouts.saturating_add(1);
             } else {
                 if !resolution.addresses.is_empty() && resolution.grace_deadline.is_none() {
                     resolution.grace_deadline =
@@ -583,6 +613,9 @@ impl Netstack {
             }
         }
         self.resolutions = pending;
+        for _ in 0..dial_timeouts {
+            self.record_dial_timeout()?;
+        }
         Ok(())
     }
 
@@ -602,6 +635,7 @@ impl Netstack {
         reply: oneshot::Sender<Result<DuplexStream, ProxyConnectError>>,
         overall_deadline: StdInstant,
         mut last_error: Option<String>,
+        timed_out: bool,
     ) -> Result<(), String> {
         if reply.is_closed() {
             return Ok(());
@@ -612,7 +646,7 @@ impl Netstack {
         }
         if StdInstant::now() >= overall_deadline {
             let _ = reply.send(Err(ProxyConnectError::tcp("VPN TCP connection timed out")));
-            return Ok(());
+            return self.record_dial_timeout();
         }
 
         while let Some(remote) = addresses.pop_front() {
@@ -653,6 +687,11 @@ impl Netstack {
             let socket = self.sockets.add(socket);
             let id = self.next_connection_id;
             self.next_connection_id = self.next_connection_id.wrapping_add(1).max(1);
+            let attempt_timeout = if addresses.is_empty() {
+                TCP_SINGLE_ATTEMPT_TIMEOUT
+            } else {
+                TCP_MULTI_ATTEMPT_TIMEOUT
+            };
             self.connections.insert(
                 id,
                 Connection {
@@ -663,7 +702,7 @@ impl Netstack {
                     remote_port: port,
                     remaining_addresses: addresses,
                     overall_deadline,
-                    attempt_deadline: (StdInstant::now() + TCP_ATTEMPT_TIMEOUT)
+                    attempt_deadline: (StdInstant::now() + attempt_timeout)
                         .min(overall_deadline),
                     established: false,
                 },
@@ -674,13 +713,17 @@ impl Netstack {
         let error = last_error.map(ProxyConnectError::tcp)
             .unwrap_or_else(|| ProxyConnectError::dns("VPN DNS lookup returned no usable address"));
         let _ = reply.send(Err(error));
+        if timed_out {
+            return self.record_dial_timeout();
+        }
         Ok(())
     }
 
     fn process_connections(&mut self) -> Result<(), String> {
         let ids = self.connections.keys().copied().collect::<Vec<_>>();
-        let mut remove = Vec::<(u64, String)>::new();
-        let mut retry = Vec::<(u64, String)>::new();
+        let mut remove = Vec::<(u64, String, bool)>::new();
+        let mut retry = Vec::<(u64, String, bool)>::new();
+        let mut saw_liveness = false;
         for id in ids {
             let Some(connection) = self.connections.get_mut(&id) else {
                 continue;
@@ -692,18 +735,19 @@ impl Netstack {
                     .as_ref()
                     .is_none_or(oneshot::Sender::is_closed);
                 if cancelled {
-                    remove.push((id, "VPN TCP requester closed".to_string()));
+                    remove.push((id, "VPN TCP requester closed".to_string(), false));
                     continue;
                 }
                 if StdInstant::now() >= connection.overall_deadline {
-                    remove.push((id, "VPN TCP connection timed out".to_string()));
+                    remove.push((id, "VPN TCP connection timed out".to_string(), true));
                     continue;
                 }
                 if StdInstant::now() >= connection.attempt_deadline {
-                    retry.push((id, "VPN TCP connection attempt timed out".to_string()));
+                    retry.push((id, "VPN TCP connection attempt timed out".to_string(), true));
                     continue;
                 }
                 if socket.state() == tcp::State::Established {
+                    saw_liveness = true;
                     let (client, bridge) = tokio::io::duplex(STREAM_BUFFER_BYTES);
                     let (inbound, inbound_receiver) = mpsc::channel(CONNECTION_DATA_CAPACITY);
                     spawn_stream_bridge(id, bridge, inbound_receiver, self.commands.clone());
@@ -715,11 +759,13 @@ impl Netstack {
                         .take()
                         .is_some_and(|reply| reply.send(Ok(client)).is_ok());
                     if !delivered {
-                        remove.push((id, "VPN TCP requester closed".to_string()));
+                        remove.push((id, "VPN TCP requester closed".to_string(), false));
                         continue;
                     }
                 } else if socket.state() == tcp::State::Closed {
-                    retry.push((id, "VPN TCP connection failed".to_string()));
+                    // Receiving a peer RST before timeout proves packets traverse the tunnel.
+                    saw_liveness = true;
+                    retry.push((id, "VPN TCP connection failed".to_string(), false));
                     continue;
                 }
             }
@@ -749,7 +795,7 @@ impl Netstack {
                 }
             }
             if let Some(error) = connection_error {
-                remove.push((id, error));
+                remove.push((id, error, false));
                 continue;
             }
 
@@ -763,7 +809,7 @@ impl Netstack {
                 let count = match socket.recv_slice(&mut bytes) {
                     Ok(count) => count,
                     Err(error) => {
-                        remove.push((id, format!("could not read VPN TCP data: {error}")));
+                        remove.push((id, format!("could not read VPN TCP data: {error}"), false));
                         continue;
                     }
                 };
@@ -774,7 +820,7 @@ impl Netstack {
                         .as_ref()
                         .is_some_and(|sender| sender.try_send(bytes).is_err())
                 {
-                    remove.push((id, "VPN TCP receive buffer closed".to_string()));
+                    remove.push((id, "VPN TCP receive buffer closed".to_string(), false));
                     continue;
                 }
             }
@@ -782,19 +828,25 @@ impl Netstack {
                 connection.inbound.take();
             }
             if connection.established && socket.state() == tcp::State::Closed {
-                remove.push((id, "VPN TCP connection closed".to_string()));
+                remove.push((id, "VPN TCP connection closed".to_string(), false));
             }
         }
-        for (id, reason) in remove {
-            self.remove_connection(id, &reason);
+        if saw_liveness {
+            self.record_tunnel_liveness();
         }
-        for (id, reason) in retry {
-            self.retry_connection(id, &reason)?;
+        for (id, reason, dial_timeout) in remove {
+            self.remove_connection(id, &reason);
+            if dial_timeout {
+                self.record_dial_timeout()?;
+            }
+        }
+        for (id, reason, timed_out) in retry {
+            self.retry_connection(id, &reason, timed_out)?;
         }
         Ok(())
     }
 
-    fn retry_connection(&mut self, id: u64, reason: &str) -> Result<(), String> {
+    fn retry_connection(&mut self, id: u64, reason: &str, timed_out: bool) -> Result<(), String> {
         let Some(mut connection) = self.connections.remove(&id) else {
             return Ok(());
         };
@@ -814,6 +866,7 @@ impl Netstack {
             reply,
             connection.overall_deadline,
             Some(reason.to_string()),
+            timed_out,
         )
     }
 
@@ -1447,9 +1500,76 @@ mod tests {
                 Err(error) => error,
             };
 
-            assert_eq!(error.kind, super::super::transport::PluginVpnTransportFailureKind::Tcp);
-            assert!(error.message.contains("address family"));
-            network.stop();
+        assert_eq!(error.kind, super::super::transport::PluginVpnTransportFailureKind::Tcp);
+        assert!(error.message.contains("address family"));
+        network.stop();
         });
+    }
+
+    #[test]
+    fn tcp_dial_timeout_stays_under_browser_proxy_connect_timeout() {
+        assert!(TCP_MULTI_ATTEMPT_TIMEOUT < TCP_DIAL_TIMEOUT);
+        assert!(TCP_SINGLE_ATTEMPT_TIMEOUT <= TCP_DIAL_TIMEOUT);
+        assert!(TCP_DIAL_TIMEOUT < Duration::from_secs(10));
+
+        let mut stack = dns_test_stack();
+        let (reply, mut response) = oneshot::channel();
+        let now = StdInstant::now();
+        stack
+            .start_tcp_candidates(
+                VecDeque::from([
+                    IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+                    IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)),
+                ]),
+                443,
+                reply,
+                now + TCP_DIAL_TIMEOUT,
+                None,
+                false,
+            )
+            .expect("start multi-IP TCP dial");
+        let connection = stack.connections.values().next().expect("active connection");
+        assert!(connection.overall_deadline <= now + Duration::from_secs(10));
+        assert!(connection.attempt_deadline <= now + TCP_MULTI_ATTEMPT_TIMEOUT + Duration::from_millis(50));
+        assert!(response.try_recv().is_err());
+    }
+
+    #[test]
+    fn consecutive_dial_timeouts_mark_tunnel_unresponsive_and_liveness_resets_counter() {
+        let mut stack = dns_test_stack();
+        for _ in 0..(ZOMBIE_TUNNEL_TIMEOUT_THRESHOLD - 1) {
+            let (reply, mut response) = oneshot::channel();
+            stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+            stack.resolutions[0].dns_deadline = StdInstant::now();
+            stack.process_resolutions().expect("below zombie threshold");
+            assert_eq!(
+                response.try_recv().expect("DNS result").err().expect("timeout").kind,
+                super::super::transport::PluginVpnTransportFailureKind::Dns
+            );
+        }
+        assert_eq!(stack.consecutive_dial_timeouts, ZOMBIE_TUNNEL_TIMEOUT_THRESHOLD - 1);
+
+        // Observing live tunnel traffic resets the consecutive timeout streak.
+        stack.record_tunnel_liveness();
+        assert_eq!(stack.consecutive_dial_timeouts, 0);
+
+        for attempt in 1..=ZOMBIE_TUNNEL_TIMEOUT_THRESHOLD {
+            let (reply, mut response) = oneshot::channel();
+            stack
+                .start_dial("198.51.100.10".into(), 443, reply)
+                .expect("start TCP dial");
+            let id = *stack.connections.keys().next().expect("connection id");
+            stack.connections.get_mut(&id).expect("connection").attempt_deadline = StdInstant::now();
+            let result = stack.process_connections();
+            assert_eq!(
+                response.try_recv().expect("TCP timeout delivered").err().expect("timeout").kind,
+                super::super::transport::PluginVpnTransportFailureKind::Tcp
+            );
+            if attempt < ZOMBIE_TUNNEL_TIMEOUT_THRESHOLD {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result.unwrap_err(), ZOMBIE_TUNNEL_ERROR);
+            }
+        }
     }
 }

@@ -592,7 +592,12 @@ impl ExternalTun for NoreaExternalTun {
             sink,
             Arc::new(move |error| {
                 if failure_connector.clear_if_current(generation) {
-                    let _ = failure_events.send(EngineEvent::TunnelInterrupted(error.clone()));
+                    let event = if error == super::netstack::ZOMBIE_TUNNEL_ERROR {
+                        EngineEvent::TunnelFailure(error.clone())
+                    } else {
+                        EngineEvent::TunnelInterrupted(error.clone())
+                    };
+                    let _ = failure_events.send(event);
                     let _ = failure_io.error(&error);
                 }
             }),

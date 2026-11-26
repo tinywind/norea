@@ -358,6 +358,51 @@ describe("plugin VPN app lifecycle", () => {
       expect(releaseMock).not.toHaveBeenCalled();
       expect(onStopped).not.toHaveBeenCalled();
     });
+
+    it("switches immediately away from a zombie tunnel and prevents ping-pong during cooldown", async () => {
+      vi.useFakeTimers();
+      const first = saved("a", 1);
+      const second = saved("b", 2);
+      const third = saved("c", 3);
+      vaultMock.mockResolvedValue({ limit: 20, profiles: [first, second, third], cleanupError: null });
+      restoreMock
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ ...CONNECTED_STATUS, profile: { ...CONNECTED_STATUS.profile!, hash: second.hash, remoteHost: second.ip } })
+        .mockResolvedValueOnce({ ...CONNECTED_STATUS, profile: { ...CONNECTED_STATUS.profile!, hash: third.hash, remoteHost: third.ip } });
+      const onRestored = vi.fn();
+      const onError = vi.fn();
+      stop = startPluginVpnLifecycle({ onRestored, onError, onStopped: vi.fn() });
+      await vi.advanceTimersByTimeAsync(0);
+
+      emitStatus?.({
+        kind: "error",
+        status: {
+          ...CONNECTED_STATUS,
+          phase: "error",
+          profile: { ...CONNECTED_STATUS.profile!, hash: first.hash, remoteHost: first.ip },
+          error: "VPN tunnel stopped carrying traffic (consecutive DNS/TCP timeouts)",
+        },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(replaceMock.mock.calls).toEqual([[third]]);
+      expect(restoreMock).toHaveBeenCalledTimes(2);
+
+      // A second zombie failure within the 60s stability cooldown must not bounce back to `first`.
+      await vi.advanceTimersByTimeAsync(10_000);
+      emitStatus?.({
+        kind: "error",
+        status: {
+          ...CONNECTED_STATUS,
+          phase: "error",
+          profile: { ...CONNECTED_STATUS.profile!, hash: third.hash, remoteHost: third.ip },
+          error: "VPN tunnel stopped carrying traffic (consecutive DNS/TCP timeouts)",
+        },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(replaceMock.mock.calls).toEqual([[third], [second]]);
+      expect(restoreMock).toHaveBeenCalledTimes(3);
+      expect(onError).toHaveBeenCalled();
+    });
   });
 
   it("removes resume listeners and ignores completion after teardown", async () => {

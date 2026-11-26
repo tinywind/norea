@@ -257,13 +257,28 @@ impl ProxyRouter {
     }
 
     fn record_failure(&self, accepted: &AcceptedConnection, target: &ProxyTarget, error: &ProxyConnectError) {
-        if !matches!(accepted.route, ProxyRoute::Tunnel(_)) {
-            return;
+        let host = normalized_host(&target.host);
+        match &accepted.route {
+            ProxyRoute::Direct => {
+                log::warn!(
+                    "plugin direct proxy failed route={} request={} target={}:{} kind={:?}: {}",
+                    accepted.generation, accepted.request_id, host, target.port, error.kind, error.message,
+                );
+                return;
+            }
+            ProxyRoute::Blocked(_) => {
+                log::warn!(
+                    "plugin proxy blocked route={} request={} target={}:{} reason={}",
+                    accepted.generation, accepted.request_id, host, target.port, error.message,
+                );
+                return;
+            }
+            ProxyRoute::Tunnel(_) => {}
         }
         let failure = PluginVpnTransportFailure {
             route_generation: accepted.generation,
             request_id: accepted.request_id,
-            host: normalized_host(&target.host),
+            host,
             port: target.port,
             kind: error.kind,
             message: error.message.clone(),
@@ -292,8 +307,26 @@ impl ProxyRouter {
     async fn connect(&self, accepted: &AcceptedConnection, target: &ProxyTarget) -> Result<ProxyStream, ProxyConnectError> {
         let connector = match &accepted.route {
             ProxyRoute::Direct => Arc::new(DirectConnector) as Arc<dyn ProxyConnector>,
-            ProxyRoute::Blocked(reason) => return Err(ProxyConnectError::tunnel(reason.clone())),
-            ProxyRoute::Tunnel(connector) => connector.clone(),
+            ProxyRoute::Blocked(reason) => {
+                let error = ProxyConnectError::tunnel(reason.clone());
+                self.record_failure(accepted, target, &error);
+                return Err(error);
+            }
+            ProxyRoute::Tunnel(connector) => {
+                if is_suppressed_tunnel_noise_host(&target.host) {
+                    log::debug!(
+                        "plugin VPN proxy suppressed Chromium autofill request route={} request={} target={}:{}",
+                        accepted.generation,
+                        accepted.request_id,
+                        normalized_host(&target.host),
+                        target.port,
+                    );
+                    return Err(ProxyConnectError::proxy(
+                        "suppressed Chromium autofill request",
+                    ));
+                }
+                connector.clone()
+            }
         };
         let result = tokio::time::timeout(CONNECT_TIMEOUT, connector.connect(target))
             .await
@@ -304,6 +337,10 @@ impl ProxyRouter {
         }
         result
     }
+}
+
+fn is_suppressed_tunnel_noise_host(host: &str) -> bool {
+    normalized_host(host) == "content-autofill.googleapis.com"
 }
 
 fn normalized_host(host: &str) -> String {
@@ -1293,6 +1330,41 @@ mod tests {
             assert_eq!(failure.message, "VPN DNS lookup failed or returned no usable address");
             assert_eq!(proxy.transport_cursor().expect("route retained").route_generation, cursor.route_generation);
             proxy_task.abort();
+        });
+    }
+
+    #[test]
+    fn tunnel_suppresses_chromium_autofill_noise_without_dialing_or_recording_failure() {
+        use std::sync::atomic::AtomicUsize;
+
+        struct CountingConnector(Arc<AtomicUsize>);
+        impl ProxyConnector for CountingConnector {
+            fn connect<'a>(&'a self, _: &'a ProxyTarget) -> ConnectFuture<'a> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Err(ProxyConnectError::tcp("should not dial")) })
+            }
+        }
+
+        test_runtime().block_on(async {
+            let dials = Arc::new(AtomicUsize::new(0));
+            let router = ProxyRouter::new();
+            router.set_route(ProxyRoute::Tunnel(Arc::new(CountingConnector(dials.clone()))));
+            let cursor = router.transport_cursor().expect("tunnel cursor");
+            let (accepted, _) = router.accept();
+            let result = router
+                .connect(
+                    &accepted,
+                    &ProxyTarget {
+                        host: "CONTENT-AUTOFILL.GOOGLEAPIS.COM.".into(),
+                        port: 443,
+                    },
+                )
+                .await;
+            assert!(result.is_err());
+            assert_eq!(dials.load(Ordering::SeqCst), 0);
+            assert!(router
+                .transport_failure(cursor, "https://content-autofill.googleapis.com/")
+                .is_none());
         });
     }
 

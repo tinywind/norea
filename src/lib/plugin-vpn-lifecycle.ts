@@ -23,6 +23,10 @@ import { usePluginVpnStore } from "../store/plugin-vpn";
 const RECOVERY_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const;
 // A dead server would otherwise be retried forever while download workers cannot lease it.
 const FAILURES_BEFORE_PROFILE_SWITCH = 3;
+// Data-path stalls occur after OpenVPN handshake succeeded, so switch away immediately
+// and keep failed profiles excluded until a replacement stays healthy past this window.
+const ZOMBIE_TUNNEL_ERROR = /stopped carrying traffic/i;
+const FAILED_PROFILE_COOLDOWN_MS = 60_000;
 
 type FailureOutcome = "retry" | "switched" | "stopped" | "superseded";
 
@@ -94,18 +98,32 @@ export function startPluginVpnLifecycle({
   let profileFailures = 0;
   let failedProfileKeys = new Set<string>();
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let stabilityTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingZombieProfile: { profile: PluginVpnProfile; error: string } | null = null;
   let stopStatusListener: (() => void) | null = null;
 
   const clearRetry = () => {
     if (retryTimer !== null) clearTimeout(retryTimer);
     retryTimer = null;
   };
-  const resetEpisode = () => {
+  const clearStabilityTimer = () => {
+    if (stabilityTimer !== null) clearTimeout(stabilityTimer);
+    stabilityTimer = null;
+  };
+  const resetEpisode = (preserveFailedProfiles = false) => {
     failedAttempts = 0;
     retryFailures = 0;
     failingProfile = null;
     profileFailures = 0;
-    failedProfileKeys = new Set();
+    clearStabilityTimer();
+    if (preserveFailedProfiles && failedProfileKeys.size > 0) {
+      stabilityTimer = setTimeout(() => {
+        stabilityTimer = null;
+        failedProfileKeys = new Set();
+      }, FAILED_PROFILE_COOLDOWN_MS);
+    } else {
+      failedProfileKeys = new Set();
+    }
     publishRecoverySnapshot(EMPTY_RECOVERY_SNAPSHOT);
   };
   const scheduleRetry = () => {
@@ -119,7 +137,10 @@ export function startPluginVpnLifecycle({
       restore();
     }, RECOVERY_RETRY_DELAYS_MS[delayIndex]);
   };
-  const switchProfile = async (failed: PluginVpnProfile): Promise<FailureOutcome> => {
+  const switchProfile = async (
+    failed: PluginVpnProfile,
+    allowSingleProfileRetry = false,
+  ): Promise<FailureOutcome> => {
     failedProfileKeys.add(failed.hash);
     failedProfileKeys.add(failed.remoteHost);
     const vault = await listSavedPluginVpnProfiles();
@@ -136,6 +157,18 @@ export function startPluginVpnLifecycle({
       } catch (error) {
         // Native refuses a profile a download worker leases; the next candidate may be idle.
         console.warn("[plugin-vpn] recovery profile replacement skipped", error);
+      }
+    }
+    if (allowSingleProfileRetry && vault.profiles.length <= 1) {
+      if (failed.hash !== failingProfile) {
+        failingProfile = failed.hash;
+        profileFailures = 0;
+      }
+      profileFailures += 1;
+      if (profileFailures < FAILURES_BEFORE_PROFILE_SWITCH) {
+        failedProfileKeys.delete(failed.hash);
+        failedProfileKeys.delete(failed.remoteHost);
+        return "retry";
       }
     }
     return await releasePluginVpnRecoveryProfile() ? "stopped" : "superseded";
@@ -156,6 +189,27 @@ export function startPluginVpnLifecycle({
     if (profileFailures < FAILURES_BEFORE_PROFILE_SWITCH) return "retry";
     return switchProfile(profile);
   };
+  const recoverZombieTunnel = (profile: PluginVpnProfile, errorMessage: string) => {
+    if (!active || !isNetworkOnline() || isPluginVpnRecoveryStopped()) return;
+    if (restoring) {
+      pendingZombieProfile = { profile, error: errorMessage };
+      return;
+    }
+    clearRetry();
+    clearStabilityTimer();
+    restoring = true;
+    failedAttempts += 1;
+    if (failedAttempts === 1) onError(new Error(errorMessage));
+    void switchProfile(profile, true).catch((failure: unknown) => {
+      console.warn("[plugin-vpn] zombie tunnel failover failed", failure);
+      return "retry" as const;
+    }).then((outcome) => {
+      restoring = false;
+      if (!active || !isNetworkOnline()) return;
+      if (outcome === "switched" || outcome === "retry") restore();
+      else if (outcome === "stopped") onStopped?.();
+    });
+  };
   const restore = () => {
     if (!active || restoring || !isNetworkOnline() || retryTimer !== null || isPluginVpnRecoveryStopped()) return;
     clearRetry();
@@ -165,12 +219,18 @@ export function startPluginVpnLifecycle({
         restoring = false;
         if (!active || !isNetworkOnline()) return;
         if (status) {
-          resetEpisode();
+          resetEpisode(failedProfileKeys.size > 0);
         } else {
           failedAttempts = 0;
           retryFailures = 0;
         }
         if (status) onRestored(status);
+        if (pendingZombieProfile) {
+          const next = pendingZombieProfile;
+          pendingZombieProfile = null;
+          recoverZombieTunnel(next.profile, next.error);
+          return;
+        }
         if (recoveryPending) {
           recoveryPending = false;
           requestRecovery();
@@ -178,6 +238,7 @@ export function startPluginVpnLifecycle({
       },
       (error: unknown) => {
         recoveryPending = false;
+        pendingZombieProfile = null;
         if (!active || !isNetworkOnline()) {
           restoring = false;
           return;
@@ -257,7 +318,13 @@ export function startPluginVpnLifecycle({
           lastError: event.status.error,
         });
       }
-      if (isRetryablePluginVpnError(event.status.error)) {
+      if (
+        event.status.error &&
+        ZOMBIE_TUNNEL_ERROR.test(event.status.error) &&
+        event.status.profile
+      ) {
+        recoverZombieTunnel(event.status.profile, event.status.error);
+      } else if (isRetryablePluginVpnError(event.status.error)) {
         requestRecovery();
       }
     }
@@ -277,6 +344,8 @@ export function startPluginVpnLifecycle({
   return () => {
     active = false;
     clearRetry();
+    clearStabilityTimer();
+    pendingZombieProfile = null;
     stopStatusListener?.();
     stopNetworkListener();
     stopIntentListener();
