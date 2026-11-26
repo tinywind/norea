@@ -208,6 +208,42 @@ describe("shared-profile site dispatch", () => {
     window.__noreaAndroidScraperResolve?.(payload.id, JSON.stringify({ ok: true, result: true }));
     await reset;
   });
+
+  it("dispatches queued site browser navigation and interactive fetches ahead of background pool work", async () => {
+    const native = window.__NoreaAndroidScraper!;
+    const active = androidWebviewExtract("https://one.test/1", null, 1_000, null, "one", "pool:0");
+    const queuedPool = androidWebviewExtract("https://one.test/2", null, 1_000, null, "one", "pool:0");
+    const queuedInteractive = androidWebviewFetch(
+      "https://two.test/browse", {}, null, null, "two", "immediate", 1_000, undefined, "interactive",
+    );
+    const queuedNavigate = androidScraperNavigate("three", "https://three.test/", null);
+
+    expect(native.extract).toHaveBeenCalledOnce();
+    expect(native.fetch).not.toHaveBeenCalled();
+    expect(native.navigate).not.toHaveBeenCalled();
+
+    const activeId = JSON.parse(vi.mocked(native.extract).mock.calls[0][0]).id;
+    window.__noreaAndroidScraperResolve?.(activeId, JSON.stringify({ ok: true, result: "chapter-1" }));
+    await expect(active).resolves.toBe("chapter-1");
+
+    expect(native.navigate).toHaveBeenCalledOnce();
+    expect(native.fetch).not.toHaveBeenCalled();
+    expect(native.extract).toHaveBeenCalledOnce();
+    const navigateId = JSON.parse(vi.mocked(native.navigate).mock.calls[0][0]).id;
+    window.__noreaAndroidScraperResolve?.(navigateId, JSON.stringify({ ok: true, result: true }));
+    await expect(queuedNavigate).resolves.toBe(true);
+
+    expect(native.fetch).toHaveBeenCalledOnce();
+    expect(native.extract).toHaveBeenCalledOnce();
+    const fetchId = JSON.parse(vi.mocked(native.fetch).mock.calls[0][0]).id;
+    window.__noreaAndroidScraperResolve?.(fetchId, JSON.stringify({ ok: true, result: { status: 200 } }));
+    await expect(queuedInteractive).resolves.toMatchObject({ status: 200 });
+
+    expect(native.extract).toHaveBeenCalledTimes(2);
+    const secondExtractId = JSON.parse(vi.mocked(native.extract).mock.calls[1][0]).id;
+    window.__noreaAndroidScraperResolve?.(secondExtractId, JSON.stringify({ ok: true, result: "chapter-2" }));
+    await expect(queuedPool).resolves.toBe("chapter-2");
+  });
 });
 
 describe("Android scraper browser state", () => {

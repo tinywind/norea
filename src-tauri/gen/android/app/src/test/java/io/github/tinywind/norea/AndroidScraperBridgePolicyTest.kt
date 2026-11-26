@@ -261,4 +261,60 @@ class AndroidScraperBridgePolicyTest {
       ),
     )
   }
+
+  @Test
+  fun siteBrowserNavigationCompletesOnDocumentReadyOnlyAfterStart() {
+    assertFalse(
+      shouldCompleteSiteBrowserNavigation(
+        navigationStarted = false,
+        documentUrl = "https://example.com/old",
+        httpDocument = true,
+        event = SiteBrowserNavigationEvent.DOCUMENT_READY,
+      ),
+    )
+    assertTrue(
+      shouldCompleteSiteBrowserNavigation(
+        navigationStarted = true,
+        documentUrl = "https://example.com/new",
+        httpDocument = true,
+        event = SiteBrowserNavigationEvent.DOCUMENT_READY,
+      ),
+    )
+    assertFalse(
+      shouldCompleteSiteBrowserNavigation(
+        navigationStarted = true,
+        documentUrl = "about:blank",
+        httpDocument = false,
+        event = SiteBrowserNavigationEvent.DOCUMENT_READY,
+      ),
+    )
+  }
+
+  @Test
+  fun siteBrowserNavigationFallsBackToPageFinishedWhileIgnoringStaleParkedFinish() {
+    assertFalse(
+      shouldCompleteSiteBrowserNavigation(
+        navigationStarted = false,
+        documentUrl = "https://example.com/#norea-parked",
+        httpDocument = true,
+        event = SiteBrowserNavigationEvent.PAGE_FINISHED,
+      ),
+    )
+    assertTrue(
+      shouldCompleteSiteBrowserNavigation(
+        navigationStarted = false,
+        documentUrl = "https://example.com/page#section",
+        httpDocument = true,
+        event = SiteBrowserNavigationEvent.PAGE_FINISHED,
+      ),
+    )
+    assertTrue(
+      shouldCompleteSiteBrowserNavigation(
+        navigationStarted = true,
+        documentUrl = "https://example.com/image.png",
+        httpDocument = true,
+        event = SiteBrowserNavigationEvent.PAGE_FINISHED,
+      ),
+    )
+  }
 }

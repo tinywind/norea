@@ -45,6 +45,7 @@ import {
 import { isAbortError } from "../abort";
 import { LOCAL_PLUGIN_ID } from "../plugins/types";
 import { isNetworkUnavailableError } from "../network";
+import { isAndroidRuntime } from "../tauri-runtime";
 import { TaskUserCancelledError } from "./task-errors";
 import { describeError } from "../errors";
 import { isHttpNotFoundError } from "../http/status-error";
@@ -288,6 +289,7 @@ export class TaskScheduler {
   private sourceForegroundConcurrency: number;
   private sourceBackgroundConcurrency: number;
   private readonly sourceBackgroundConcurrencyFollowsForeground: boolean;
+  private readonly serialSiteDispatchOverride?: boolean;
   private sourceQueuesPaused: boolean;
   private downloadFailureStops: DownloadFailureStops = { sourceErrors: {} };
   private readonly consecutiveDownloadFailures = new Map<string, number>();
@@ -332,7 +334,9 @@ export class TaskScheduler {
     sourceBackgroundConcurrency?: number;
     sourceQueuesPaused?: boolean;
     terminalTaskRetentionMs?: number;
+    serialSiteDispatch?: boolean;
   } = {}) {
+    this.serialSiteDispatchOverride = options.serialSiteDispatch;
     this.sourceQueuesPaused = options.sourceQueuesPaused ?? false;
     this.history = new TaskHistory(options.terminalTaskRetentionMs, (id) => {
       const current = this.entries.get(id);
@@ -1154,23 +1158,89 @@ export class TaskScheduler {
     return yielded;
   }
 
+  private usesSerialSiteDispatch(): boolean {
+    return this.serialSiteDispatchOverride ?? isAndroidRuntime();
+  }
+
+  private hasActiveInteractiveSourceTask(): boolean {
+    const immediateId = this.sourceExecutors.activeImmediateTaskId;
+    if (immediateId) {
+      const activeImmediate = this.entries.get(immediateId);
+      if (
+        activeImmediate &&
+        activeImmediate.record.status === "running" &&
+        (isOpenSiteSourceKind(activeImmediate.record.kind) ||
+          activeImmediate.record.priority === "interactive")
+      ) {
+        return true;
+      }
+      for (const queue of this.sourceQueues.values()) {
+        for (const id of queue) {
+          const candidate = this.entries.get(id);
+          if (
+            candidate?.record.status === "queued" &&
+            isOpenSiteSourceKind(candidate.record.kind)
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+    for (const taskId of this.sourceExecutors.activePoolTasks.values()) {
+      const activePool = this.entries.get(taskId);
+      if (
+        activePool &&
+        activePool.record.status === "running" &&
+        !activePool.spec.vpnWorker &&
+        activePool.record.priority === "interactive"
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private yieldRunningInterruptibleDownloadsForUi(entry: TaskEntry): number {
     if (!this.shouldPromoteForUiResponsiveness(entry)) return 0;
-    if (canUsePoolExecutorForImmediateInteraction(entry) || usesSearchExecutor(entry)) return 0;
+    let yielded = 0;
+    // Android serializes every site WebView operation behind one global
+    // dispatch lease, so an active 35s pool extraction would stall interactive
+    // navigation or browsing unless preempted back to the queue.
+    if (
+      this.usesSerialSiteDispatch() &&
+      (isOpenSiteSourceKind(entry.record.kind) ||
+        entry.record.priority === "interactive")
+    ) {
+      const preempted = this.pauseRunningSourceTasks(
+        undefined,
+        (candidate) =>
+          isInterruptibleDownloadKind(candidate.record.kind) &&
+          !isUiInteraction(candidate) &&
+          !candidate.spec.vpnWorker &&
+          candidate.sourceExecutorId?.startsWith("pool:") === true,
+      );
+      if (preempted > 0) {
+        this.debug("preempted pool downloads for interactive UI work", entry, {
+          preempted,
+        });
+      }
+      yielded += preempted;
+    }
+    if (canUsePoolExecutorForImmediateInteraction(entry) || usesSearchExecutor(entry)) return yielded;
     const requiresImmediateExecutor = shouldUseImmediateExecutor(entry);
-    const yielded = this.yieldRunningSourceTasks(undefined, (candidate) => {
+    const immediateYielded = this.yieldRunningSourceTasks(undefined, (candidate) => {
       if (!isInterruptibleDownloadKind(candidate.record.kind)) return false;
       return (
         !requiresImmediateExecutor ||
         candidate.sourceExecutorId === "immediate"
       );
     });
-    if (yielded > 0) {
+    if (immediateYielded > 0) {
       this.debug("yielded interruptible downloads for UI work", entry, {
-        yielded,
+        yielded: immediateYielded,
       });
     }
-    return yielded;
+    return yielded + immediateYielded;
   }
 
   private handleUiResponsiveSourceEnqueue(entry: TaskEntry): void {
@@ -2085,6 +2155,14 @@ export class TaskScheduler {
             if (entry.spec.vpnWorker || this.awaitsServerLane(entry)) return false;
             if (shouldUseImmediateExecutor(entry) || usesSearchExecutor(entry)) return false;
             if (!this.canUseExecutorForSource(entry, executorId)) return false;
+            if (
+              this.usesSerialSiteDispatch() &&
+              isInterruptibleDownloadKind(entry.record.kind) &&
+              !isUiInteraction(entry) &&
+              this.hasActiveInteractiveSourceTask()
+            ) {
+              return false;
+            }
             if (
               isBackgroundPriority(entry.record.priority) &&
               this.sourceExecutors.activeBackgroundCount >=

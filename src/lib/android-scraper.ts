@@ -66,6 +66,7 @@ type AndroidWorkerMethod = AndroidScraperMethod | "configureWorker" | "ensureWor
 
 interface SiteDispatch {
   queue?: string;
+  priority: number;
   start: () => void;
   cancel: () => void;
 }
@@ -73,13 +74,52 @@ let siteDispatchActive = false;
 let siteDispatchBlocked: Error | null = null;
 const siteDispatches: SiteDispatch[] = [];
 
+function siteDispatchPriority(
+  method: "fetch" | "extract" | "navigate" | "resetSiteData",
+  queue?: string,
+  priority?: unknown,
+): number {
+  if (method === "navigate") return 0;
+  const requested = typeof priority === "string"
+    ? priority.toLowerCase()
+    : undefined;
+  switch (requested) {
+    case "interactive":
+      return 1;
+    case "user":
+      return 2;
+    case "normal":
+      return 3;
+    case "deferred":
+      return 4;
+    case "background":
+      return 5;
+  }
+  if (queue === "immediate") return 1;
+  if (queue?.startsWith("search:")) return 2;
+  if (queue?.startsWith("pool:") || queue?.startsWith("vpn:")) return 5;
+  return 3;
+}
+
+function enqueueSiteDispatch(entry: SiteDispatch): void {
+  const index = siteDispatches.findIndex((queued) => queued.priority > entry.priority);
+  if (index >= 0) siteDispatches.splice(index, 0, entry);
+  else siteDispatches.push(entry);
+}
+
 /** One native site operation at a time, including its transport diagnostic window. */
-function withSiteDispatch<T>(run: () => Promise<T>, signal?: AbortSignal, queue?: string): Promise<T> {
+function withSiteDispatch<T>(
+  run: () => Promise<T>,
+  signal?: AbortSignal,
+  queue?: string,
+  priority = 3,
+): Promise<T> {
   if (signal?.aborted) return Promise.reject(requestAbortedError());
   return new Promise<T>((resolve, reject) => {
     let started = false;
     const entry: SiteDispatch = {
       queue,
+      priority,
       cancel: () => {
         if (started) return;
         const index = siteDispatches.indexOf(entry);
@@ -107,7 +147,7 @@ function withSiteDispatch<T>(run: () => Promise<T>, signal?: AbortSignal, queue?
       },
     };
     signal?.addEventListener("abort", entry.cancel, { once: true });
-    if (siteDispatchActive) siteDispatches.push(entry);
+    if (siteDispatchActive) enqueueSiteDispatch(entry);
     else entry.start();
   });
 }
@@ -270,13 +310,13 @@ function callNetworkNative<T>(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<T> {
+  const queue = typeof payload.queue === "string" ? payload.queue : "immediate";
   return withSiteDispatch(() => {
     const run = () => callNative<T>(method, payload, timeoutMs, signal);
-    const queue = typeof payload.queue === "string" ? payload.queue : "immediate";
     const worker = vpnWorkers.get(queue)?.worker ?? null;
     if (queue.startsWith("vpn:") && !worker) return run();
     return withPluginVpnTransportDiagnostics(payload.url, worker, run, signal);
-  }, signal, typeof payload.queue === "string" ? payload.queue : "immediate");
+  }, signal, queue, siteDispatchPriority(method, queue, payload.priority));
 }
 
 export function cancelAndroidScraperExecutor(

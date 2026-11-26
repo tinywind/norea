@@ -110,6 +110,7 @@ vi.mock("../plugins/manager", () => ({
 }));
 vi.mock("../plugins/chapter-acquisition", () => acquisitionMocks);
 vi.mock("../tauri-runtime", () => ({
+  isAndroidRuntime: vi.fn(() => false),
   isTauriRuntime: vi.fn(() => false),
 }));
 const serverMediaMocks = vi.hoisted(() => ({ fetch: vi.fn(async () => null as Response | null), hasServerChapter: vi.fn(async () => false) }));

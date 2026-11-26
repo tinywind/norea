@@ -270,3 +270,175 @@ describe("UI interactions independent of download settings", () => {
     }
   });
 });
+
+describe("serial site dispatch preemption for interactive UI", () => {
+  let serialScheduler: TaskScheduler;
+
+  beforeEach(() => {
+    serialScheduler = new TaskScheduler({
+      sourceForegroundConcurrency: 1,
+      sourceQueuesPaused: false,
+      serialSiteDispatch: true,
+    });
+  });
+
+  afterEach(async () => {
+    serialScheduler.cancelActiveTasks({ discardQueued: true });
+    await settle();
+  });
+
+  it("preempts a running pool download when site browser opens and resumes it after close", async () => {
+    const events: string[] = [];
+    let downloadRuns = 0;
+    let finishResumedDownload!: () => void;
+    let closeBrowser!: () => void;
+
+    const download = serialScheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Background download",
+      priority: "background",
+      source: { id: "bookkor-novel", name: "Bookkor" },
+      run: (context) => {
+        downloadRuns += 1;
+        const attempt = downloadRuns;
+        events.push(`download:${attempt}:${context.executor}`);
+        return new Promise<void>((resolve, reject) => {
+          if (attempt === 1) {
+            context.signal.addEventListener(
+              "abort",
+              () => {
+                events.push("download:1:aborted");
+                reject(new DOMException("Task was paused.", "AbortError"));
+              },
+              { once: true },
+            );
+            return;
+          }
+          finishResumedDownload = resolve;
+        });
+      },
+    });
+    void download.promise.catch(() => undefined);
+    await settle();
+    expect(events).toEqual(["download:1:pool:0"]);
+
+    const browser = serialScheduler.enqueueSource({
+      kind: "source.openSite",
+      title: "Open GoodToon",
+      priority: "interactive",
+      exclusive: true,
+      source: { id: "goodtoon-webtoon", name: "GoodToon" },
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          events.push(`browser:${context.executor}`);
+          closeBrowser = resolve;
+        }),
+    });
+    await settle();
+
+    expect(events).toEqual([
+      "download:1:pool:0",
+      "download:1:aborted",
+      "browser:immediate",
+    ]);
+    expect(serialScheduler.getTask(download.id)?.status).toBe("queued");
+    expect(serialScheduler.getTask(browser.id)?.status).toBe("running");
+
+    closeBrowser();
+    await browser.promise;
+    await settle();
+
+    expect(events).toEqual([
+      "download:1:pool:0",
+      "download:1:aborted",
+      "browser:immediate",
+      "download:2:pool:0",
+    ]);
+    expect(serialScheduler.getTask(download.id)?.status).toBe("running");
+
+    finishResumedDownload();
+    await expect(download.promise).resolves.toBeUndefined();
+    expect(serialScheduler.getTask(download.id)?.status).toBe("succeeded");
+  });
+
+  it("preempts a running pool download for interactive browsing and keeps server-lane transfers running", async () => {
+    const events: string[] = [];
+    let poolRuns = 0;
+    let finishServer!: () => void;
+    let finishResumedPool!: () => void;
+    let finishBrowse!: () => void;
+
+    const serverDownload = serialScheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Server download",
+      priority: "background",
+      serverLane: true,
+      source: { id: "source-a", name: "Source A" },
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          events.push(`server:${context.executor}`);
+          finishServer = resolve;
+        }),
+    });
+    const poolDownload = serialScheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Pool download",
+      priority: "background",
+      source: { id: "source-b", name: "Source B" },
+      run: (context) => {
+        poolRuns += 1;
+        const attempt = poolRuns;
+        events.push(`pool:${attempt}:${context.executor}`);
+        return new Promise<void>((resolve, reject) => {
+          if (attempt === 1) {
+            context.signal.addEventListener(
+              "abort",
+              () => {
+                events.push("pool:1:aborted");
+                reject(new DOMException("Task was paused.", "AbortError"));
+              },
+              { once: true },
+            );
+            return;
+          }
+          finishResumedPool = resolve;
+        });
+      },
+    });
+    void poolDownload.promise.catch(() => undefined);
+    await settle();
+
+    const browse = serialScheduler.enqueueSource({
+      kind: "source.openNovel",
+      title: "Open novel",
+      priority: "interactive",
+      source: { id: "source-c", name: "Source C" },
+      run: (context) =>
+        new Promise<void>((resolve) => {
+          events.push(`browse:${context.executor}`);
+          finishBrowse = resolve;
+        }),
+    });
+    await settle();
+
+    expect(serialScheduler.getTask(serverDownload.id)?.status).toBe("running");
+    expect(serialScheduler.getTask(poolDownload.id)?.status).toBe("queued");
+    expect(serialScheduler.getTask(browse.id)?.status).toBe("running");
+
+    finishBrowse();
+    await browse.promise;
+    await settle();
+    expect(serialScheduler.getTask(poolDownload.id)?.status).toBe("running");
+
+    finishServer();
+    finishResumedPool();
+    await Promise.all([serverDownload.promise, poolDownload.promise]);
+    expect(events).toEqual([
+      "server:server:0",
+      "pool:1:pool:0",
+      "pool:1:aborted",
+      "browse:immediate",
+      "pool:2:pool:0",
+    ]);
+  });
+});

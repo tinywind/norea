@@ -75,6 +75,25 @@ internal fun shouldCollapseAndroidScraperSurface(
   foreground: Boolean,
 ): Boolean = activeExtractId == completedId && !foreground
 
+internal enum class SiteBrowserNavigationEvent {
+  DOCUMENT_READY,
+  PAGE_FINISHED,
+}
+
+internal fun shouldCompleteSiteBrowserNavigation(
+  navigationStarted: Boolean,
+  documentUrl: String,
+  httpDocument: Boolean,
+  event: SiteBrowserNavigationEvent,
+): Boolean {
+  if (!httpDocument) return false
+  return when (event) {
+    SiteBrowserNavigationEvent.DOCUMENT_READY -> navigationStarted
+    SiteBrowserNavigationEvent.PAGE_FINISHED ->
+      navigationStarted || !documentUrl.endsWith("/#norea-parked", ignoreCase = true)
+  }
+}
+
 class AndroidScraperBridge(
   private val mainWebView: WebView,
   private val bridgeSession: BridgeSession,
@@ -1796,8 +1815,37 @@ class AndroidScraperBridge(
       useWideViewPort = true
     }
     webView.setInitialScale(0)
+    var navigationStarted = false
+    // Reveal the site browser as soon as DOMContentLoaded fires instead of
+    // keeping a loading cover up while third-party ads or heavy images finish.
+    // onPageFinished remains the fallback for non-HTML or script-blocked pages.
+    fun completeNavigation(documentUrl: String, event: SiteBrowserNavigationEvent) {
+      if (state.activeAction?.id != id || state.webView !== webView) return
+      if (!shouldCompleteSiteBrowserNavigation(
+          navigationStarted = navigationStarted,
+          documentUrl = documentUrl,
+          httpDocument = isHttpUrl(documentUrl),
+          event = event,
+        )) {
+        return
+      }
+      state.currentUrl = documentUrl
+      state.contextReady = true
+      state.pendingDocumentReady = null
+      AndroidSiteBrowserOwner.flushCookiesAsync()
+      recordVpnNavigationResponse(webView, documentUrl)
+      webView.clearHistory()
+      webView.webViewClient = makeClient(state, null)
+      browserVisible = true
+      logState(state, "runNavigate ready id=$id event=$event url=$documentUrl", documentUrl)
+      finishSuccess(state, id, true)
+    }
+    state.pendingDocumentReady = { documentUrl ->
+      completeNavigation(documentUrl, SiteBrowserNavigationEvent.DOCUMENT_READY)
+    }
     webView.webViewClient = makeClient(
       state,
+      onStarted = { navigationStarted = true },
       onHttpErrorDocument = { _, _ ->
         if (state.activeAction?.id == id) {
           // Show the response already being loaded; do not retry or replace
@@ -1806,13 +1854,10 @@ class AndroidScraperBridge(
           finishSuccess(state, id, true)
         }
       },
-    ) {
-      if (state.activeAction?.id != id) return@makeClient
-      webView.clearHistory()
-      webView.webViewClient = makeClient(state, null)
-      browserVisible = true
-      finishSuccess(state, id, true)
-    }
+      onFinished = { finishedUrl ->
+        completeNavigation(finishedUrl, SiteBrowserNavigationEvent.PAGE_FINISHED)
+      },
+    )
     setTimeout(
       state,
       id,
