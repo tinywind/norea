@@ -2,6 +2,35 @@ use super::*;
 use std::path::Path;
 
 #[test]
+fn reader_cache_cors_allows_only_the_configured_ui_to_read_cached_assets() {
+    let pdf = "/reader-asset/~cache/32-1r0xyrg/Harbor-Maps.pdf";
+    let request = http::Request::get(pdf).body(Vec::new()).unwrap();
+    let mut config = tauri::Config::default();
+    let expected = if cfg!(any(windows, target_os = "android")) {
+        "http://tauri.localhost"
+    } else {
+        "tauri://localhost"
+    };
+    assert_eq!(reader_cache_origin("main", &request, &config).unwrap(), expected);
+
+    let foreign = http::Request::get(pdf)
+        .header(header::ORIGIN, "https://foreign.example")
+        .body(Vec::new()).unwrap();
+    assert_eq!(reader_cache_origin("main", &foreign, &config).unwrap(), expected);
+    assert!(reader_cache_origin("scraper", &request, &config).is_none());
+    let cover = http::Request::get("/contents/demo/novel-id/cover.jpg").body(Vec::new()).unwrap();
+    assert!(reader_cache_origin("main", &cover, &config).is_none());
+    let post = http::Request::post(pdf).body(Vec::new()).unwrap();
+    assert!(reader_cache_origin("main", &post, &config).is_none());
+
+    config.build.dev_url = Some("http://localhost:1420/ui".parse().unwrap());
+    assert_eq!(
+        reader_cache_origin("main", &request, &config).unwrap(),
+        if cfg!(dev) { "http://localhost:1420" } else { expected }
+    );
+}
+
+#[test]
 fn media_documents_are_sandboxed_without_changing_svg_bytes() {
     let body = br#"<svg xmlns="http://www.w3.org/2000/svg"><script>parent.postMessage('executed','*')</script><rect width="10" height="10"/></svg>"#.to_vec();
     for request_path in [

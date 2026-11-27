@@ -28,10 +28,11 @@ const MAX_READER_CACHE_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 pub fn norea_media_protocol_response(
     app: &AppHandle,
+    webview_label: &str,
     request: http::Request<Vec<u8>>,
 ) -> http::Response<Vec<u8>> {
     let request_path = request.uri().path();
-    match norea_media_protocol_body(app, request_path) {
+    let mut response = match norea_media_protocol_body(app, request_path) {
         Ok((body, content_type)) => {
             norea_media_success_response(request_path, body, content_type)
         }
@@ -40,7 +41,35 @@ pub fn norea_media_protocol_response(
             .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
             .body(message.into_bytes())
             .unwrap_or_else(|_| http::Response::new(Vec::new())),
+    };
+    if let Some(origin) = reader_cache_origin(webview_label, &request, app.config()) {
+        response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
     }
+    response
+}
+
+fn reader_cache_origin(
+    webview_label: &str,
+    request: &http::Request<Vec<u8>>,
+    config: &tauri::Config,
+) -> Option<http::HeaderValue> {
+    if webview_label != "main" || request.method() != http::Method::GET
+        || !request.uri().path().trim_start_matches('/').starts_with(READER_MEDIA_CACHE_REQUEST_PREFIX)
+    {
+        return None;
+    }
+    // Android WebView can omit Origin from intercepted requests. Use the configured UI origin.
+    if let Some(dev) = config.build.dev_url.as_ref().filter(|url| cfg!(dev) && matches!(url.scheme(), "http" | "https")) {
+        return http::HeaderValue::from_str(&dev.origin().ascii_serialization()).ok();
+    }
+    let origin = if !cfg!(any(windows, target_os = "android")) {
+        "tauri://localhost"
+    } else if config.app.windows.iter().any(|window| window.label == "main" && window.use_https_scheme) {
+        "https://tauri.localhost"
+    } else {
+        "http://tauri.localhost"
+    };
+    Some(http::HeaderValue::from_static(origin))
 }
 
 fn norea_media_success_response(

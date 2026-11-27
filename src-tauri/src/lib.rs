@@ -163,7 +163,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .register_uri_scheme_protocol("norea-media", |ctx, request| {
-            chapter_media::norea_media_protocol_response(ctx.app_handle(), request)
+            chapter_media::norea_media_protocol_response(ctx.app_handle(), ctx.webview_label(), request)
         })
         .invoke_handler(tauri::generate_handler![
             device::get_default_device_name,
