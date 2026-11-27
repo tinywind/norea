@@ -1122,8 +1122,7 @@ pub fn write_stored_novel_metadata_in_tx(
     }
     let pretty = serde_json::to_vec_pretty(&metadata)
         .map_err(|err| format!("work metadata: format metadata JSON: {err}"))?;
-    ctx.snapshot_work_metadata_file(root, &relative)?;
-    let changed = crate::chapter_media::write_work_metadata_bytes_at(root, &relative, &pretty)?;
+    let changed = ctx.write_metadata_file(root, &relative, &pretty)?;
     if notify_changes && changed {
         ctx.mark_work_metadata_changed();
     }
@@ -1146,8 +1145,7 @@ pub fn write_stored_novel_cover_in_tx(
         return Err("work metadata: invalid cover bytes".to_string());
     }
     let relative = format!("{directory}/{}", cover.file_name);
-    ctx.snapshot_work_metadata_file(root, &relative)?;
-    let changed = crate::chapter_media::write_work_metadata_bytes_at(root, &relative, bytes)?;
+    let changed = ctx.write_metadata_file(root, &relative, bytes)?;
     if notify_changes && changed {
         ctx.record_cover_changed(0);
         ctx.mark_work_metadata_changed();
@@ -1164,8 +1162,7 @@ pub fn remove_stored_novel_cover_in_tx(
 ) -> Result<(), String> {
     if let Some(cover) = cover {
         let relative = format!("{directory}/{}", cover.file_name);
-        ctx.snapshot_work_metadata_file(root, &relative)?;
-        crate::chapter_media::remove_work_metadata_file_at(root, &relative)?;
+        ctx.remove_metadata_file(root, &relative)?;
     }
     if notify_changes {
         ctx.record_cover_changed(0);
@@ -2333,8 +2330,7 @@ pub async fn flush_dirty_in_tx(
         let Some(novel) = novel_row else {
             if let Some((cached_novel_id, ref known_dir, _)) = known {
                 let relative = format!("{known_dir}/novel.json");
-                ctx.snapshot_work_metadata_file(&root, &relative)?;
-                crate::chapter_media::remove_work_metadata_file_at(&root, &relative)?;
+                ctx.remove_metadata_file(&root, &relative)?;
                 super::novel_override::remove_stored_override_file_in_tx(&root, ctx, known_dir)?;
                 ctx.record_work_directory(WorkDirectoryUpdateDto {
                     novel_id: cached_novel_id,

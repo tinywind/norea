@@ -249,6 +249,11 @@ pub fn schema_migrations() -> Vec<SchemaMigration> {
             description: "rewrite retired novel statuses to Ongoing",
             sql: include_str!("migrations/0020_normalize_novel_status.sql"),
         },
+        SchemaMigration {
+            version: 21,
+            description: "record the last committed metadata publication",
+            sql: include_str!("migrations/0021_work_metadata_commit.sql"),
+        },
     ]
 }
 
@@ -519,6 +524,8 @@ pub async fn open_and_migrate_pools(path: &Path) -> Result<AppDatabase, String> 
     }
 
     let writer = ensure_incremental_auto_vacuum(path, writer, true).await?;
+
+    crate::db::tx::recover_metadata_files(&writer).await?;
 
     let reader_options = SqliteConnectOptions::new()
         .filename(path)

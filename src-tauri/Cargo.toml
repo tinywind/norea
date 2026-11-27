@@ -18,6 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6.1", features = [] }
 
 [dependencies]
+getrandom = "=0.4.3"
 serde_json = "1.0.149"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.11.1"
@@ -49,12 +50,10 @@ webview2-com = "0.39.1"
 windows = { version = "0.62.2", features = ["Foundation_Collections", "Networking_Connectivity", "UI_Notifications", "Win32_Foundation", "Win32_Networking_WinHttp", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(any(target_os = "android", target_os = "windows"))'.dependencies]
-getrandom = "=0.4.3"
 openvpn-connect = { version = "=0.1.2", default-features = false, features = ["external-tun", "tokio", "vendor"] }
 smoltcp = { version = "=0.14.0", default-features = false, features = ["dns-max-result-count-8", "dns-max-server-count-8", "medium-ip", "proto-dns", "proto-ipv4", "proto-ipv6", "socket-dns", "socket-tcp", "std"] }
 
 [dev-dependencies]
-getrandom = "=0.4.3"
 smoltcp = { version = "=0.14.0", default-features = false, features = ["dns-max-result-count-8", "dns-max-server-count-8", "medium-ip", "proto-dns", "proto-ipv4", "proto-ipv6", "socket-dns", "socket-tcp", "std"] }
 tauri = { version = "2.11.1", features = ["test"] }
 tempfile = "3.27.0"

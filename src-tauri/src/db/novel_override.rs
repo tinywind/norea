@@ -426,8 +426,7 @@ fn remove_override_cover_files_in_tx(
     let removed_any = !names.is_empty();
     for name in names {
         let relative = format!("{directory}/{name}");
-        ctx.snapshot_work_metadata_file(root, &relative)?;
-        crate::chapter_media::remove_work_metadata_file_at(root, &relative)?;
+        ctx.remove_metadata_file(root, &relative)?;
     }
     Ok(removed_any)
 }
@@ -458,11 +457,10 @@ pub async fn store_novel_override_in_tx(
             ctx.record_cover_changed(novel_id);
         }
         let relative = format!("{directory}/{OVERRIDE_FILE_NAME}");
-        ctx.snapshot_work_metadata_file(root, &relative)?;
         if normalized.is_empty() {
-            crate::chapter_media::remove_work_metadata_file_at(root, &relative)?;
+            ctx.remove_metadata_file(root, &relative)?;
         } else {
-            crate::chapter_media::write_work_metadata_bytes_at(root, &relative, &bytes)?;
+            ctx.write_metadata_file(root, &relative, &bytes)?;
         }
     }
     if let Some(directory) = work.directory {
@@ -659,8 +657,7 @@ pub async fn update_novel_override_in_tx(
             };
             remove_override_cover_files_in_tx(root, ctx, directory, Some(&file_name))?;
             let relative = format!("{directory}/{file_name}");
-            ctx.snapshot_work_metadata_file(root, &relative)?;
-            crate::chapter_media::write_work_metadata_bytes_at(root, &relative, &bytes)?;
+            ctx.write_metadata_file(root, &relative, &bytes)?;
             let entry_updated_at = match fields.get(COVER_FIELD) {
                 Some(existing) => updated_at.max(existing.updated_at.saturating_add(1)),
                 None => updated_at,
@@ -727,8 +724,7 @@ pub async fn merge_novel_override_with_cover_in_tx(
                     cover_file_changed = true;
                 }
                 let relative = format!("{directory}/{target_file}");
-                ctx.snapshot_work_metadata_file(root, &relative)?;
-                if crate::chapter_media::write_work_metadata_bytes_at(root, &relative, bytes)? {
+                if ctx.write_metadata_file(root, &relative, bytes)? {
                     cover_file_changed = true;
                 }
                 if cover_field_changed || cover_file_changed {
@@ -878,8 +874,7 @@ pub(super) async fn publish_missing_override_file_in_tx(
         return Ok(());
     };
     let (_, bytes) = encode_work_override(&work.identity, &fields)?;
-    ctx.snapshot_work_metadata_file(root, &relative)?;
-    crate::chapter_media::write_work_metadata_bytes_at(root, &relative, &bytes)?;
+    ctx.write_metadata_file(root, &relative, &bytes)?;
     Ok(())
 }
 
@@ -891,8 +886,7 @@ pub(super) fn remove_stored_override_file_in_tx(
 ) -> Result<(), String> {
     remove_override_cover_files_in_tx(root, ctx, directory, None)?;
     let relative = format!("{directory}/{OVERRIDE_FILE_NAME}");
-    ctx.snapshot_work_metadata_file(root, &relative)?;
-    crate::chapter_media::remove_work_metadata_file_at(root, &relative)
+    ctx.remove_metadata_file(root, &relative)
 }
 
 pub async fn read_novel_override_cover_in_conn(

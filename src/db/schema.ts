@@ -20,6 +20,11 @@ export const workMetadataDirtyTable = sqliteTable("work_metadata_dirty", {
   path: text("path").notNull(),
 }, (table) => ({ identity: primaryKey({ columns: [table.pluginId, table.path] }) }));
 
+export const workMetadataCommitTable = sqliteTable("work_metadata_commit", {
+  id: integer("id").primaryKey(),
+  token: text("token").notNull(),
+}, (table) => ({ singleton: check("work_metadata_commit_singleton", sql`${table.id}=1`) }));
+
 export const workMetadataCacheStateTable = sqliteTable("work_metadata_cache_state", {
   id: integer("id").primaryKey(),
 }, (table) => ({ singleton: check("work_metadata_cache_state_singleton", sql`${table.id}=1`) }));

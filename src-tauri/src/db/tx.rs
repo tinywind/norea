@@ -1,10 +1,11 @@
+mod metadata_journal;
+
+use metadata_journal::MetadataJournal;
 use std::collections::HashMap;
-use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
 use sqlx::{SqliteConnection, SqlitePool};
 
 use super::{
@@ -73,23 +74,9 @@ impl TxOptions {
 }
 
 #[derive(Debug)]
-struct FileRollbackEntry {
-    path: PathBuf,
-    previous_bytes: Option<Vec<u8>>,
-}
-
-#[derive(Debug)]
-struct WorkMetadataRollbackEntry {
-    root: PathBuf,
-    relative: String,
-    previous_bytes: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Default)]
 pub struct TxContext {
     effects: DbMutationEffects,
-    file_rollbacks: Vec<FileRollbackEntry>,
-    metadata_file_rollbacks: Vec<WorkMetadataRollbackEntry>,
+    metadata_journal: MetadataJournal,
     metadata_file_guards: HashMap<String, (Option<String>, String)>,
     fetched_catalog: Option<super::work_metadata::FetchedChapterCatalog>,
     native_directories_dirty_root: Option<PathBuf>,
@@ -156,52 +143,27 @@ impl TxContext {
         }
     }
 
-    /// Captures the pre-transaction contents of a `contents/<plugin>/<work>/...`
-    /// metadata or cover file so that any subsequent SQLite or publication error
-    /// restores the exact previous file via atomic storage replacement.
-    pub fn snapshot_work_metadata_file(
-        &mut self,
-        root: &Path,
-        relative: &str,
-    ) -> Result<(), String> {
-        if self
-            .metadata_file_rollbacks
-            .iter()
-            .any(|entry| entry.root == root && entry.relative == relative)
-        {
-            return Ok(());
-        }
-        let previous_bytes =
-            crate::chapter_media::read_work_metadata_bytes_at(root, relative)?;
-        self.metadata_file_rollbacks.push(WorkMetadataRollbackEntry {
-            root: root.to_path_buf(),
-            relative: relative.to_string(),
-            previous_bytes,
-        });
-        Ok(())
+    pub fn write_metadata_file(&mut self, root: &Path, relative: &str, bytes: &[u8]) -> Result<bool, String> {
+        self.prepare_metadata_change(root, relative, Some(bytes))?;
+        crate::chapter_media::write_work_metadata_bytes_at(root, relative, bytes)
     }
 
-    /// Captures the current contents of `path` (if not already captured in this
-    /// transaction) so that a subsequent rollback or failed `COMMIT` restores
-    /// the exact pre-transaction file state.
-    pub fn snapshot_file_for_rollback(&mut self, path: &Path) -> Result<(), String> {
-        if self.file_rollbacks.iter().any(|entry| entry.path == path) {
-            return Ok(());
-        }
-        let previous_bytes = match fs::read(path) {
-            Ok(bytes) => Some(bytes),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                return Err(format!(
-                    "db tx: snapshot '{}' before write: {err}",
-                    path.display()
-                ))
+    pub fn remove_metadata_file(&mut self, root: &Path, relative: &str) -> Result<(), String> {
+        self.prepare_metadata_change(root, relative, None)?;
+        crate::chapter_media::remove_work_metadata_file_at(root, relative)
+    }
+
+    fn prepare_metadata_change(&mut self, root: &Path, relative: &str, intended: Option<&[u8]>) -> Result<(), String> {
+        let previous = crate::chapter_media::read_work_metadata_bytes_at(root, relative)?;
+        if let Some((original, next)) = self.metadata_file_guards.get(relative) {
+            let current = previous.as_deref().map(metadata_journal::digest);
+            if current != *original && current.as_ref() != Some(next) {
+                return Err("The cover changed outside chapter reconciliation. Existing files and the recovery backup were retained.".into());
             }
-        };
-        self.file_rollbacks.push(FileRollbackEntry {
-            path: path.to_path_buf(),
-            previous_bytes,
-        });
+        }
+        if previous.as_deref() != intended {
+            self.metadata_journal.record(root, relative, previous.as_deref(), intended)?;
+        }
         Ok(())
     }
 
@@ -215,95 +177,6 @@ impl TxContext {
             .insert(relative.into(), (original_sha256, next_sha256));
     }
 
-    fn rollback_files(&mut self) -> Option<String> {
-        let mut rollback_failures: Vec<String> = Vec::new();
-
-        for entry in self.metadata_file_rollbacks.drain(..).rev() {
-            let current = match crate::chapter_media::read_work_metadata_bytes_at(
-                &entry.root,
-                &entry.relative,
-            ) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    rollback_failures.push(err);
-                    continue;
-                }
-            };
-            if let Some((expected_original, expected_next)) =
-                self.metadata_file_guards.get(&entry.relative)
-            {
-                let current_sha256 = current.as_ref().map(|bytes| {
-                    let digest = Sha256::digest(bytes);
-                    digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
-                });
-                let accepted = current_sha256.as_ref() == expected_original.as_ref()
-                    || current_sha256.as_deref() == Some(expected_next.as_str());
-                if !accepted {
-                    rollback_failures.push(
-                        "The cover changed outside chapter reconciliation. Existing files and the recovery backup were retained."
-                            .to_string(),
-                    );
-                    continue;
-                }
-            }
-            if current == entry.previous_bytes {
-                continue;
-            }
-            let result = match entry.previous_bytes {
-                Some(ref bytes) => crate::chapter_media::write_work_metadata_bytes_at(
-                    &entry.root,
-                    &entry.relative,
-                    bytes,
-                )
-                .map(|_| ()),
-                None => crate::chapter_media::remove_work_metadata_file_at(
-                    &entry.root,
-                    &entry.relative,
-                ),
-            };
-            if let Err(err) = result {
-                log::warn!(
-                    "db tx: failed to restore work metadata '{}' on rollback: {err}",
-                    entry.relative
-                );
-                rollback_failures.push(err);
-            }
-        }
-
-        for entry in self.file_rollbacks.drain(..).rev() {
-            match entry.previous_bytes {
-                Some(bytes) => {
-                    if let Some(parent) = entry.path.parent() {
-                        let _ = fs::create_dir_all(parent);
-                    }
-                    if let Err(err) = fs::write(&entry.path, bytes) {
-                        log::warn!(
-                            "db tx: failed to restore '{}' on rollback: {err}",
-                            entry.path.display()
-                        );
-                        rollback_failures.push(err.to_string());
-                    }
-                }
-                None => {
-                    if let Err(err) = fs::remove_file(&entry.path) {
-                        if err.kind() != std::io::ErrorKind::NotFound {
-                            log::warn!(
-                                "db tx: failed to remove created file '{}' on rollback: {err}",
-                                entry.path.display()
-                            );
-                            rollback_failures.push(err.to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        if rollback_failures.is_empty() {
-            None
-        } else {
-            Some(rollback_failures.join("; "))
-        }
-    }
 }
 
 fn is_busy_error(error: &sqlx::Error) -> bool {
@@ -354,6 +227,16 @@ async fn read_content_sync_max_sequence(conn: &mut SqliteConnection) -> Result<O
     .map_err(|err| format!("db tx: read content_sync_journal max sequence: {err}"))
 }
 
+pub(crate) async fn recover_metadata_files_in_tx(pool: &SqlitePool, conn: &mut SqliteConnection) -> Result<(), String> {
+    MetadataJournal::new(pool.connect_options().get_filename()).recover(conn).await
+}
+
+pub(crate) async fn recover_metadata_files(pool: &SqlitePool) -> Result<(), String> {
+    let mut tx = begin_immediate_with_retries(pool, 0).await?;
+    recover_metadata_files_in_tx(pool, &mut tx).await?;
+    tx.commit().await.map_err(|err| format!("finish metadata recovery: {err}"))
+}
+
 pub async fn with_write_tx<T, F>(
     pool: &SqlitePool,
     options: TxOptions,
@@ -366,7 +249,15 @@ where
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'c>>,
 {
     let mut tx = begin_immediate_with_retries(pool, options.busy_begin_retries).await?;
-    let mut ctx = TxContext::default();
+    let metadata_journal = MetadataJournal::new(pool.connect_options().get_filename());
+    metadata_journal.recover(&mut tx).await?;
+    let mut ctx = TxContext {
+        effects: Default::default(),
+        metadata_journal,
+        metadata_file_guards: HashMap::new(),
+        fetched_catalog: None,
+        native_directories_dirty_root: None,
+    };
 
     let outcome: Result<T, String> = async {
         if options.remote_content_sync {
@@ -395,18 +286,30 @@ where
                 read_content_sync_max_sequence(&mut tx).await?;
         }
 
+        if let Some(token) = ctx.metadata_journal.token() {
+            sqlx::query("INSERT INTO work_metadata_commit(id, token) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET token = excluded.token")
+                .bind(token)
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| format!("record metadata commit: {err}"))?;
+        }
+
         Ok(value)
     }
     .await;
 
     match outcome {
         Ok(value) => match tx.commit().await {
-            Ok(()) => Ok(DbMutationEnvelope {
-                value,
-                effects: ctx.effects,
-            }),
+            Ok(()) => {
+                if ctx.metadata_journal.token().is_some() {
+                    if let Err(err) = recover_metadata_files(pool).await {
+                        log::warn!("db tx: metadata journal cleanup pending: {err}");
+                    }
+                }
+                Ok(DbMutationEnvelope { value, effects: ctx.effects })
+            }
             Err(err) => {
-                let rollback_failure = ctx.rollback_files();
+                let rollback_failure = recover_metadata_files(pool).await.err();
                 if let Some(root) = ctx.native_directories_dirty_root.take() {
                     let _ =
                         super::work_metadata::restore_native_directories_from_pool(pool, &root)
@@ -421,7 +324,7 @@ where
             }
         },
         Err(error) => {
-            let rollback_failure = ctx.rollback_files();
+            let rollback_failure = ctx.metadata_journal.recover(&mut tx).await.err();
             if let Err(rollback_err) = tx.rollback().await {
                 log::warn!("db tx: rollback failed after error: {rollback_err}");
             }
@@ -443,6 +346,7 @@ where
 mod tests {
     use super::*;
     use crate::db::test_support::open_test_db;
+    use std::fs;
     use crate::db::ReadMode;
 
     #[tokio::test]
@@ -557,12 +461,14 @@ mod tests {
     #[tokio::test]
     async fn failed_write_tx_rolls_back_sqlite_and_file_snapshots() {
         let test_db = open_test_db().await;
-        let existing_file = test_db.dir.path().join("existing-novel.json");
-        let created_file = test_db.dir.path().join("created-novel.json");
+        let root = test_db.dir.path().to_owned();
+        let existing = "contents/demo/work/cover.png";
+        let created = "contents/demo/work/override.json";
+        let existing_file = root.join(existing);
+        let created_file = root.join(created);
+        fs::create_dir_all(existing_file.parent().unwrap()).unwrap();
         fs::write(&existing_file, b"before-tx").unwrap();
 
-        let existing_clone = existing_file.clone();
-        let created_clone = created_file.clone();
         let err = with_write_tx(
             test_db.db.writer(),
             TxOptions::default(),
@@ -574,10 +480,8 @@ mod tests {
                     .execute(&mut *conn)
                     .await
                     .map_err(|err| err.to_string())?;
-                    ctx.snapshot_file_for_rollback(&existing_clone)?;
-                    fs::write(&existing_clone, b"mutated-in-tx").unwrap();
-                    ctx.snapshot_file_for_rollback(&created_clone)?;
-                    fs::write(&created_clone, b"new-in-tx").unwrap();
+                    ctx.write_metadata_file(&root, existing, b"mutated-in-tx")?;
+                    ctx.write_metadata_file(&root, created, b"{}")?;
                     Err::<(), String>("simulated failure".to_string())
                 })
             },
