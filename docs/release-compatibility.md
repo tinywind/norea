@@ -25,7 +25,7 @@ The SQLite schema is persistent user data.
   freed pages and WAL frames via `PRAGMA incremental_vacuum` and
   `PRAGMA wal_checkpoint(TRUNCATE)`.
 
-The current migration set extends through 0020_normalize_novel_status.sql.
+The current migration set extends through 0021_work_metadata_commit.sql.
 
 ## Filesystem metadata
 
@@ -77,7 +77,9 @@ The native full-device archive format is version 2. It is distinct from the
 portable backup format and from content-server chapter storage.
 
 Restore validates the archive, database migration history, and expected files
-before replacing live state. Interrupted restore keeps recovery material rather
+before replacing live state. A version-2 archive from database v20 can restore
+to v21 when every transferable schema object and prior migration checksum matches.
+The target keeps its own metadata publication receipt. Interrupted restore keeps recovery material rather
 than treating a partial replacement as complete.
 
 ## Update metadata

@@ -42,6 +42,14 @@ import {
   runWithScraperExecutor,
   type ScraperExecutorId,
 } from "./scraper-queue";
+import {
+  isOpenSiteSourceKind,
+  isUiInteraction,
+  usesSearchExecutor,
+  isInterruptibleDownloadKind,
+  shouldUseImmediateExecutor,
+  canUsePoolExecutorForImmediateInteraction,
+} from "./executor-policy";
 import { isAbortError } from "../abort";
 import { LOCAL_PLUGIN_ID } from "../plugins/types";
 import { isNetworkUnavailableError } from "../network";
@@ -183,10 +191,6 @@ function isBackgroundPriority(priority: TaskPriority): boolean {
   return priority === "background";
 }
 
-function isOpenSiteSourceKind(kind: TaskKind): boolean {
-  return kind === "source.openSite";
-}
-
 function isSourceBarrierMainKind(kind: TaskKind): boolean {
   return kind === "maintenance.clearWebViewCache";
 }
@@ -200,55 +204,6 @@ function canVerifySourceAccess(kind: TaskKind, isOriginTask: boolean): boolean {
     !isOpenSiteSourceKind(kind) &&
     kind !== "source.clearCookies" &&
     (kind !== "chapter.repairMedia" || isOriginTask)
-  );
-}
-
-function isImmediateBrowseSourceKind(kind: TaskKind): boolean {
-  return (
-    kind === "source.openNovel" ||
-    kind === "source.previewNovel" ||
-    kind === "source.mergeNovel" ||
-    kind === "source.listPopular" ||
-    kind === "source.listLatest" ||
-    kind === "source.search"
-  );
-}
-
-function isUiResponsiveSourceKind(kind: TaskKind): boolean {
-  return (
-    isOpenSiteSourceKind(kind) ||
-    isImmediateBrowseSourceKind(kind) ||
-    kind === "source.clearCookies" ||
-    kind === "source.globalSearch" ||
-    kind === "source.refreshNovel"
-  );
-}
-
-function isUiInteraction(entry: TaskEntry): boolean {
-  return entry.record.priority === "interactive" ||
-    (entry.record.priority === "user" && isUiResponsiveSourceKind(entry.record.kind));
-}
-
-function usesSearchExecutor(entry: TaskEntry): boolean {
-  return entry.record.kind === "source.globalSearch" && isUiInteraction(entry);
-}
-
-function isInterruptibleDownloadKind(kind: TaskKind): boolean {
-  return kind === "chapter.download" || kind === "chapter.repairMedia";
-}
-
-function shouldUseImmediateExecutor(entry: TaskEntry): boolean {
-  if (entry.spec.requiresForegroundExecutor) return true;
-  if (isOpenSiteSourceKind(entry.record.kind)) return true;
-  return isUiInteraction(entry) && !usesSearchExecutor(entry);
-}
-
-function canUsePoolExecutorForImmediateInteraction(entry: TaskEntry): boolean {
-  return (
-    entry.spec.requiresForegroundExecutor !== true &&
-    !isOpenSiteSourceKind(entry.record.kind) &&
-    !usesSearchExecutor(entry) &&
-    isUiInteraction(entry)
   );
 }
 

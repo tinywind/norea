@@ -197,6 +197,24 @@ async fn migrations(
     .map_err(failure)
 }
 
+fn compatible_device_schema(
+    current: &[(String, String, String)],
+    incoming: &[(String, String, String)],
+    history: &[(i64, bool, Vec<u8>)],
+    incoming_history: &[(i64, bool, Vec<u8>)],
+) -> bool {
+    if current == incoming && history == incoming_history {
+        return true;
+    }
+    // V21 adds only a device-local commit receipt. All transferable objects
+    // and every preceding migration checksum must still match exactly.
+    history.last().is_some_and(|(version, success, _)| *version == 21 && *success)
+        && history.split_last().is_some_and(|(_, prefix)| prefix == incoming_history)
+        && incoming_history.last().is_some_and(|(version, _, _)| *version == 20)
+        && current.len() == incoming.len() + 1
+        && current.iter().filter(|(kind, name, _)| !(kind == "table" && name == "work_metadata_commit")).eq(incoming)
+}
+
 async fn validate_database(source: &Path, pool: &SqlitePool) -> Result<(), String> {
     let mut input = SqliteConnection::connect_with(
         &SqliteConnectOptions::new().filename(source).read_only(true),
@@ -218,9 +236,10 @@ async fn validate_database(source: &Path, pool: &SqlitePool) -> Result<(), Strin
             return Err(failure("database integrity check failed"));
         }
         let mut current = pool.acquire().await.map_err(failure)?;
-        if schema(&mut input, "main").await? != schema(&mut current, "main").await?
-            || migrations(&mut input, "main").await? != migrations(&mut current, "main").await?
-        {
+        if !compatible_device_schema(
+            &schema(&mut current, "main").await?, &schema(&mut input, "main").await?,
+            &migrations(&mut current, "main").await?, &migrations(&mut input, "main").await?,
+        ) {
             return Err(failure(
                 "database schema or migration history does not match this app",
             ));
@@ -303,20 +322,24 @@ async fn restore_database(source: &Path, pool: &SqlitePool) -> Result<(), String
         .map_err(failure)?;
     let result = async {
         let objects = schema(&mut connection, "main").await?;
-        if objects != schema(&mut connection, "device_backup").await? ||
-            migrations(&mut connection, "main").await? != migrations(&mut connection, "device_backup").await? {
+        if !compatible_device_schema(
+            &objects, &schema(&mut connection, "device_backup").await?,
+            &migrations(&mut connection, "main").await?, &migrations(&mut connection, "device_backup").await?,
+        ) {
             return Err(failure("database changed while preparing restore"));
         }
         sqlx::query("PRAGMA foreign_keys=OFF").execute(&mut *connection).await.map_err(failure)?;
         sqlx::query("BEGIN IMMEDIATE").execute(&mut *connection).await.map_err(failure)?;
         let changed = async {
+            crate::db::tx::recover_metadata_files_in_tx(pool, &mut connection).await?;
             for (kind, name, _) in &objects {
                 if kind == "trigger" {
                     sqlx::query(AssertSqlSafe(format!("DROP TRIGGER {}", quote_identifier(name)))).execute(&mut *connection).await.map_err(failure)?;
                 }
             }
             for (kind, name, _) in &objects {
-                if kind == "table" {
+                // The publication receipt belongs to this device's file journal.
+                if kind == "table" && !matches!(name.as_str(), "work_metadata_commit" | "_sqlx_migrations") {
                     let table = quote_identifier(name);
                     sqlx::query(AssertSqlSafe(format!("DELETE FROM main.{table}"))).execute(&mut *connection).await.map_err(failure)?;
                     sqlx::query(AssertSqlSafe(format!("INSERT INTO main.{table} SELECT * FROM device_backup.{table}"))).execute(&mut *connection).await.map_err(failure)?;
@@ -1322,6 +1345,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v20_device_archive_restores_without_replacing_local_migration_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("current.db");
+        let database = crate::database::open_and_migrate_pools(&path).await.unwrap();
+        let pool = database.writer();
+        let snapshot = dir.path().join("v20.db");
+        sqlx::query("VACUUM INTO ?").bind(snapshot.to_str().unwrap()).execute(pool).await.unwrap();
+        let mut old = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&snapshot)).await.unwrap();
+        old.execute("DROP TABLE work_metadata_commit; DELETE FROM _sqlx_migrations WHERE version=21; INSERT INTO novel(plugin_id,path,name) VALUES('demo','/old','Retained')").await.unwrap();
+        old.close().await.unwrap();
+        restore_database(&snapshot, pool).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, String>("SELECT name FROM novel").fetch_one(pool).await.unwrap(), "Retained");
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT max(version) FROM _sqlx_migrations").fetch_one(pool).await.unwrap(), 21);
+        let mut old = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&snapshot)).await.unwrap();
+        old.execute("UPDATE _sqlx_migrations SET checksum=X'00' WHERE version=20").await.unwrap();
+        old.close().await.unwrap();
+        assert!(restore_database(&snapshot, pool).await.is_err());
+        database.close().await;
+    }
+
+    #[tokio::test]
     async fn full_app_schema_restores_personal_data_and_rechecks_physical_downloads() {
         let dir = tempfile::tempdir().unwrap();
         let pool = database(&dir.path().join("current.db")).await;
@@ -1329,6 +1373,7 @@ mod tests {
             pool.execute(migration.sql).await.unwrap();
         }
         pool.execute("INSERT INTO repository(url,priority,enabled) VALUES('https://plugins.example.test/index.json',1,1),('https://second.example.test/index.json',2,0); INSERT INTO installed_plugin(id,name,lang,version,icon_url,source_url,source_code,repository_url) VALUES('test','Test','en','1','','https://plugins.example.test/test.js','full plugin source','https://plugins.example.test/index.json'); INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'test','/novel','Saved novel',1); INSERT INTO category(id,name,sort) VALUES(1,'Saved category',0); INSERT INTO novel_category(novel_id,category_id) VALUES(1,1); INSERT INTO chapter(novel_id,path,name,position,progress,bookmark,is_downloaded,content_bytes,media_bytes,stored_content_type) VALUES(1,'/chapter','Saved chapter',1,42,1,1,123,456,'html');").await.unwrap();
+        pool.execute("INSERT INTO work_metadata_commit VALUES(1, 'source')").await.unwrap();
         let snapshot = dir.path().join("snapshot.db");
         sqlx::query("VACUUM INTO ?")
             .bind(snapshot.to_str().unwrap())
@@ -1336,7 +1381,9 @@ mod tests {
             .await
             .unwrap();
         pool.execute("UPDATE chapter SET progress=0,bookmark=0; DELETE FROM repository; DELETE FROM installed_plugin; UPDATE novel SET in_library=0;").await.unwrap();
+        pool.execute("UPDATE work_metadata_commit SET token='target'").await.unwrap();
         restore_database(&snapshot, &pool).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, String>("SELECT token FROM work_metadata_commit").fetch_one(&pool).await.unwrap(), "target");
         assert_eq!(
             sqlx::query_as::<_, (i64, i64, i64, i64)>(
                 "SELECT progress,bookmark,is_downloaded,content_bytes FROM chapter"

@@ -39,6 +39,17 @@ foreground reads are not blocked by storage inspection. Changes made outside the
 app require a rescan; writes check the previous file fingerprint to avoid
 overwriting external edits.
 
+Before a SQLite transaction changes a work document or cover, the host writes
+its previous bytes and the intended content digest beside the app database in
+`norea.db.metadata-undo`. SQLite records the publication token in the same
+commit as the domain changes. Opening the database or starting the next writer
+discards committed records and replays uncommitted records in reverse order.
+If a file has changed independently, recovery preserves it and the undo record.
+Make the original storage folder available and retain copies of both versions
+before resolving a conflict. This protocol covers application process exit
+during metadata publication. It does not guarantee survival of device power
+loss or govern chapter payloads, merge journals, or full-device restore.
+
 Readers require `identity.pluginId`, `identity.novelId`, `identity.novelPath`, and `novel.name`.
 `schemaVersion` defaults to 1 when absent; an explicit unsupported version is
 rejected. Other missing values default to null, with `isLocal` defaulting to false

@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+// Load the real reconciliation dependencies before starting timed sync operations.
+import "./incoming-chapter-number-reconciliation";
 vi.mock("./migration-feed-state", () => ({ listIncomingMigrationSummaries: vi.fn(async () => []) }));
 vi.mock("./chapters", () => ({ fetchServerChapters: mocks.chapters }));
 vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeld: vi.fn(async () => false), cacheServerChapters: mocks.cache, readContentSyncCache: vi.fn(async () => null), writeContentSyncCache: vi.fn() }));

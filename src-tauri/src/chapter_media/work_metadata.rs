@@ -319,6 +319,12 @@ pub(crate) fn write_work_metadata_bytes_at(
     Ok(true)
 }
 
+/// Restores the exact bytes read before a transaction, including a malformed prior document.
+pub(crate) fn restore_work_metadata_bytes_at(root: &Path, relative: &str, bytes: &[u8]) -> Result<(), String> {
+    let path = checked_path(root, relative)?;
+    publish(&path, bytes)
+}
+
 pub(crate) fn remove_work_metadata_file_at(root: &Path, relative: &str) -> Result<(), String> {
     let path = checked_path(root, relative)?;
     match fs::remove_file(&path) {

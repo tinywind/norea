@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "files": {
+    "includes": ["src/**/*.ts", "src/**/*.tsx", "scripts/**/*.mjs", "package.json", "biome.json"]
+  },
+  "linter": {
+    "rules": {
+      "preset": "none",
+      "correctness": {
+        "noUnsafeFinally": "error",
+        "useValidTypeof": "error"
+      },
+      "suspicious": {
+        "noDebugger": "error",
+        "noDuplicateCase": "error",
+        "noDuplicateObjectKeys": "error"
+      }
+    }
+  },
+  "formatter": { "indentStyle": "space", "lineWidth": 100 }
+}

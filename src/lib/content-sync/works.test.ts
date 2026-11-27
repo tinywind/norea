@@ -1,4 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
+// Load the real reconciliation dependencies before starting timed sync operations.
+import "./incoming-chapter-number-reconciliation";
 import type { TestSqliteDatabase as Database } from "../../test/sql/types";
 vi.mock("./migration-feed-state", () => ({ listIncomingMigrationSummaries: vi.fn(async () => []) }));
 import type { NovelMetadataV1 } from "../work-metadata";
