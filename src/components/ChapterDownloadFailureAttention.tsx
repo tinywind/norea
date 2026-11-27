@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { Group, Text } from "@mantine/core";
 import { IconButton } from "./IconButton";
-import { CloseIcon, DownloadIcon, RepairIcon, RetryIcon, VerifyIcon, WarningIcon } from "./ui/icons";
+import { OverflowMenu } from "./ui/OverflowMenu";
+import { RepairIcon, RetryIcon, VerifyIcon, WarningIcon } from "./ui/icons";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
 import { pluginManager } from "../lib/plugins/manager";
@@ -59,9 +60,9 @@ export function ChapterDownloadRetryingStatus() {
   );
 }
 
-/** Needs attention lines for persisted chapter failures, with recovery and dismiss actions per group. */
+/** Needs attention lines for persisted chapter failures, with recovery and record removal actions per group. */
 export function ChapterDownloadFailureAttention() {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const rows = useChapterDownloadFailureSnapshot();
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<{ key: string; message: string } | null>(null);
@@ -86,9 +87,13 @@ export function ChapterDownloadFailureAttention() {
             ? "downloads.failures.serverMissingNoSource"
             : "downloads.failures.serverMissing"
           : MESSAGE_KEYS[group.failureClass];
-        const message = t(messageKey, { source, count: group.chapterIds.length, host: group.challengeHost });
+        const sourceLabel = t("downloads.failures.source", { source });
+        const count = group.chapterIds.length.toLocaleString(locale);
+        const message = t(messageKey, { count, host: group.challengeHost });
         const actionPendingKey = `${group.key}:action`;
-        const dismissPendingKey = `${group.key}:dismiss`;
+        const recover = () => act(actionPendingKey, group.key, () => group.action === "verify"
+          ? verifyGroup(group, `${sourceLabel} ${message}`)
+          : retryGroup(group));
         return (
           <section
             className="norea-source-access-banner"
@@ -101,35 +106,43 @@ export function ChapterDownloadFailureAttention() {
               <WarningIcon size="1.25rem" />
             </span>
             <div className="norea-source-access-copy">
-              <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{message}</Text>
+              <Text component="h3" fw="var(--norea-weight-bold)" size="sm">
+                <span className="norea-download-failure-source">{sourceLabel}</span>{" "}{message}
+              </Text>
               {group.serverMissing ? null : (
-                <Text c="dimmed" component="p" lineClamp={2} size="xs">
+                <Text c="dimmed" component="p" size="xs">
                   {t("downloads.failures.latest", { message: group.latestSummary })}
                 </Text>
               )}
               {error?.key === group.key ? <Text c="danger" component="p" size="sm">{error.message}</Text> : null}
             </div>
             <Group gap="xs" justify="flex-end">
-              {group.action !== "none" ? (
+              {group.action !== "none" && !group.serverMissing ? (
                 <IconButton
                   disabled={pending !== null}
-                  label={t(group.serverMissing ? "downloads.failures.downloadFromSource" : ACTION_KEYS[group.action])}
+                  label={t(ACTION_KEYS[group.action])}
                   loading={pending === actionPendingKey}
-                  onClick={() => act(actionPendingKey, group.key, () => group.action === "verify" ? verifyGroup(group, message) : retryGroup(group))}
+                  onClick={recover}
                   size="lg"
                 >
-                  {group.serverMissing ? <DownloadIcon /> : group.action === "verify" ? <VerifyIcon /> : group.action === "repair" ? <RepairIcon /> : <RetryIcon />}
+                  {group.action === "verify" ? <VerifyIcon /> : group.action === "repair" ? <RepairIcon /> : <RetryIcon />}
                 </IconButton>
               ) : null}
-              <IconButton
+              <OverflowMenu
                 disabled={pending !== null}
-                label={t("downloads.failures.dismiss")}
-                loading={pending === dismissPendingKey}
-                onClick={() => act(dismissPendingKey, group.key, () => forgetChapterDownloadFailures(group.chapterIds))}
-                size="lg"
-              >
-                <CloseIcon />
-              </IconButton>
+                items={[
+                  ...(group.serverMissing && group.action !== "none" ? [{
+                    label: t("downloads.failures.downloadFromSource", { count }),
+                    onClick: recover,
+                  }] : []),
+                  {
+                    danger: true,
+                    label: t("downloads.failures.clearRecords", { count }),
+                    onClick: () => act(`${group.key}:clear`, group.key, () => forgetChapterDownloadFailures(group.chapterIds)),
+                  },
+                ]}
+                label={t("common.more")}
+              />
             </Group>
           </section>
         );

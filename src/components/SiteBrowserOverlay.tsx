@@ -576,6 +576,7 @@ export function SiteBrowserOverlay() {
       role="dialog"
     >
       <PageHeader
+        backIcon="close"
         backLabel={closeLabel}
         className="norea-site-browser-bar"
         onBack={closeBrowser}
@@ -649,7 +650,7 @@ export function SiteBrowserOverlay() {
         <footer className="norea-site-browser-footer" id="norea-site-browser-instructions">
           <Text size="sm">
             {sourceAccessContext.challenge.kind === "forbidden"
-              ? t("errors.forbidden")
+              ? t("sourceAccess.forbiddenBrowserInstructions")
               : t("sourceAccess.browserInstructions", {
                   source: sourceAccessContext.sourceName,
                 })}

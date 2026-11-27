@@ -8,15 +8,18 @@ import {
   NovelCategoryError,
   setNovelCategories,
 } from "../../db/queries/category";
+import type { LibraryNovelCategory } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { describeError } from "../../lib/errors";
-import { ChipButton } from "../ChipButton";
-import { PlusIcon } from "../ui/icons";
+import { IconButton } from "../IconButton";
+import { UserCategoryName, formatUserCategoryName } from "../UserCategoryName";
+import { EditIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import { StatusAlert } from "../ui/StatusAlert";
 
 interface NovelCategoryEditorProps {
   active: boolean;
+  initialCategories?: readonly LibraryNovelCategory[];
   novelId: number;
   novelName: string;
   onCloseSheet: () => void;
@@ -26,12 +29,10 @@ interface NovelCategoryEditorProps {
   sheetOnly?: boolean;
 }
 
-/**
- * The novel's categories as chips under its title. Any chip, or "+ Category"
- * when none is assigned, opens the sheet that edits the assignment.
- */
+/** Lists assigned categories and opens their shared editor. */
 export function NovelCategoryEditor({
   active,
+  initialCategories,
   novelId,
   novelName,
   onCloseSheet,
@@ -46,19 +47,22 @@ export function NovelCategoryEditor({
   const categoriesQuery = useQuery({
     meta: { errorPresentation: "inline" },
     queryKey: ["category", "list"],
-    queryFn: () => listCategories(),
+    queryFn: () => listCategories("committed"),
+    staleTime: Infinity,
     enabled: active,
   });
   const membershipKey = ["category", "novel", novelId];
   const membershipQuery = useQuery({
     meta: { errorPresentation: "inline" },
     queryKey: membershipKey,
-    queryFn: () => getNovelCategoryIds(novelId),
+    queryFn: () => getNovelCategoryIds(novelId, "committed"),
     enabled: active,
   });
   const categories = (categoriesQuery.data ?? []).filter((category) => !category.isSystem);
   const assignedIds = membershipQuery.data;
-  const assignedCategories = categories.filter((category) => assignedIds?.includes(category.id));
+  const assignedCategories = categoriesQuery.data && assignedIds
+    ? categories.filter((category) => assignedIds.includes(category.id))
+    : initialCategories ?? [];
   const save = useMutation({
     meta: { errorPresentation: "inline" },
     mutationFn: (ids: number[]) => setNovelCategories(novelId, ids),
@@ -67,6 +71,7 @@ export function NovelCategoryEditor({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["category"] }),
         queryClient.invalidateQueries({ queryKey: ["novel", "library"] }),
+        queryClient.invalidateQueries({ queryKey: ["novel", "detail", novelId], exact: true }),
       ]);
       onCloseSheet();
       notifications.show({ color: "ok", message: t("categories.workSaved") });
@@ -105,33 +110,21 @@ export function NovelCategoryEditor({
 
   return (
     <>
-      {sheetOnly ? null : queryError ? (
-        <Group className="norea-novel-categories" gap="xs">
-          <Text c="danger" role="alert" size="sm">
-            {t("categories.loadFailed")}
-          </Text>
-          <Button onClick={retry} size="compact-sm" variant="subtle">
-            {t("common.retry")}
-          </Button>
-        </Group>
-      ) : loading ? null : (
-        <ul aria-label={t("categories.title")} className="norea-novel-categories">
+      {sheetOnly ? null : (
+        <div className="norea-novel-categories">
           {assignedCategories.length > 0 ? (
-            assignedCategories.map((category) => (
-              <li key={category.id}>
-                <ChipButton aria-haspopup="dialog" onClick={onOpenSheet} tone="accent">
-                  {category.name}
-                </ChipButton>
-              </li>
-            ))
-          ) : (
-            <li>
-              <ChipButton aria-haspopup="dialog" icon={<PlusIcon />} onClick={onOpenSheet}>
-                {t("categories.addToWork")}
-              </ChipButton>
-            </li>
-          )}
-        </ul>
+            <ul className="norea-novel-category-names">
+              {assignedCategories.map(category => (
+                <li key={category.id}>
+                  <span className="norea-user-category-name" title={category.name}>{formatUserCategoryName(category.name)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <IconButton aria-haspopup="dialog" label={t("categories.editWork")} onClick={onOpenSheet}>
+            <EditIcon />
+          </IconButton>
+        </div>
       )}
       <ResponsiveSheet
         className="norea-novel-category-sheet"
@@ -170,13 +163,16 @@ export function NovelCategoryEditor({
               {errorMessage}
             </StatusAlert>
           ) : null}
+          {queryError ? (
+            <Button onClick={retry} size="compact-sm" variant="subtle">{t("common.retry")}</Button>
+          ) : null}
           {loading ? <Loader size="sm" /> : null}
           {categories.map((category) => (
             <Checkbox
               checked={selectedIds.includes(category.id)}
-              disabled={save.isPending}
+              disabled={loading || !!queryError || save.isPending}
               key={category.id}
-              label={category.name}
+              label={<UserCategoryName name={category.name} />}
               onChange={(event) => {
                 const checked = event.currentTarget.checked;
                 setSelectedIds((current) => checked

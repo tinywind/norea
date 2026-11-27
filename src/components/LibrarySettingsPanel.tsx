@@ -1,3 +1,4 @@
+import { CategorySelectOption, formatUserCategoryName } from "./UserCategoryName";
 import { Select, Stack, Switch } from "@mantine/core";
 import { SegmentedToggle } from "./SegmentedToggle";
 import { useQuery } from "@tanstack/react-query";
@@ -53,12 +54,17 @@ export function LibrarySettingsPanel() {
         >
           <Select
             aria-label={t("librarySettings.defaultCategory")}
+            classNames={{ input: categories.data?.some(category => category.id === defaultCategoryId && !category.isSystem) ? "norea-user-category-name" : undefined }}
+            renderOption={({ option, checked }) => (
+              <CategorySelectOption label={option.label} checked={checked}
+                userDefined={categories.data?.some(category => String(category.id) === option.value && !category.isSystem) ?? false} />
+            )}
             data={[
               { value: "all", label: t("categories.all") },
               { value: String(UNCATEGORIZED_CATEGORY_ID), label: t("categories.uncategorized") },
               ...(categories.data ?? []).map((category) => ({
                 value: String(category.id),
-                label: category.name,
+                label: category.isSystem ? category.name : formatUserCategoryName(category.name),
               })),
             ]}
             disabled={categories.isLoading || categories.isError}

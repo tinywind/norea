@@ -8,7 +8,7 @@ vi.mock("react", () => ({ useSyncExternalStore: (subscribe: (callback: () => voi
 vi.mock("./scheduler", () => ({ taskScheduler: { subscribe: boundary.task, getSnapshot: () => ({ records: [], running: 2, queued: 3, failed: 1, succeeded: 7, cancelled: 4 }) } }));
 vi.mock("./vpn-download-runtime", () => ({ subscribeVpnDownloadRuntime: boundary.vpn, getVpnDownloadRuntimeSnapshot: () => ({ plans: [], drafts: [] }) }));
 vi.mock("./chapter-download-requests", () => ({ subscribeChapterDownloadRequests: boundary.request, getChapterDownloadRequestSnapshot: () => [] }));
-import { useTaskAttentionCount, useTaskSnapshot, useVpnDownloadRuntimeSnapshot, useChapterDownloadRequestSnapshot } from "./hooks";
+import { useTaskBadgeCounts, useTaskSnapshot, useVpnDownloadRuntimeSnapshot, useChapterDownloadRequestSnapshot } from "./hooks";
 
 beforeEach(() => {
   for (const unsubscribe of boundary.callbacks) unsubscribe();
@@ -26,7 +26,7 @@ it("attaches all three canonical state sources when the Tasks page is active", (
   expect(boundary.task).toHaveBeenCalledOnce(); expect(boundary.vpn).toHaveBeenCalledOnce(); expect(boundary.request).toHaveBeenCalledOnce();
 });
 
-it("counts running, queued and failed tasks as needing attention", () => {
-  expect(useTaskAttentionCount()).toBe(6);
+it("counts active and failed tasks separately", () => {
+  expect(useTaskBadgeCounts()).toEqual({ active: 5, failed: 1 });
   expect(boundary.task).toHaveBeenCalledOnce();
 });

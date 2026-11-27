@@ -20,6 +20,14 @@ vi.mock("../IconButton", async importOriginal => {
   };
 });
 
+vi.mock("../ui/OverflowMenu", async importOriginal => {
+  const actual = await importOriginal<typeof import("../ui/OverflowMenu")>();
+  return { ...actual, OverflowMenu: (props: ComponentProps<typeof actual.OverflowMenu>) => {
+    for (const item of props.items) rowClickHandlers.set(item.label, item.onClick);
+    return <actual.OverflowMenu {...props} />;
+  } };
+});
+
 vi.mock("../ui/ListRow", async importOriginal => {
   const actual = await importOriginal<typeof import("../ui/ListRow")>();
   return { ...actual, ListRow: (props: ComponentProps<typeof actual.ListRow>) => {
@@ -107,13 +115,22 @@ const siblingButtons = ($: ReturnType<typeof renderList>) =>
 
 describe("chapter row structure", () => {
   it("makes the whole row one button with its actions beside it, not inside it", () => {
-    const $ = renderRow({ isDownloaded: true });
+    const onDeleteDownload = vi.fn();
+    const $ = renderRow({ isDownloaded: true }, undefined, { onDeleteDownload });
     const primary = openButton($);
 
     expect(primary).toHaveLength(1);
     expect(primary.attr("type")).toBe("button");
     expect(primary.find("button, input, a, [tabindex]")).toHaveLength(0);
-    expect(siblingButtons($).map((_, button) => $(button).attr("aria-label")).get()).toEqual(["Downloaded"]);
+    expect($("[role=img][aria-label='Downloaded']")).toHaveLength(1);
+    const actions = siblingButtons($);
+    expect(actions).toHaveLength(1);
+    expect(actions.attr("aria-label")).toBe("More actions for First chapter");
+    expect(actions.attr("aria-haspopup")).toBe("menu");
+    expect(rowClickHandlers.get("Delete from device")).toBeTypeOf("function");
+    expect(onDeleteDownload).not.toHaveBeenCalled();
+    rowClickHandlers.get("Delete from device")!();
+    expect(onDeleteDownload).toHaveBeenCalledExactlyOnceWith(chapter.id);
   });
 
   it("toggles selection with a pressed state and no extra checkbox control in selection mode", () => {
@@ -249,11 +266,11 @@ describe("download state", () => {
 
   it.each<[string, Partial<Row>, ChapterDownloadStatus | undefined, string[]]>([
     ["not downloaded", {}, undefined, ["Download chapter"]],
-    ["downloaded", { isDownloaded: true }, undefined, ["Downloaded"]],
+    ["downloaded", { isDownloaded: true }, undefined, ["More actions for First chapter"]],
     ["failed", {}, { kind: "failed", error: "Timed out" }, ["Retry download"]],
     ["missing media", { contentBytes: 10, mediaRepairNeeded: true }, undefined, ["Repair"]],
     ["queued", {}, { kind: "queued", phase: "server-lookup" }, []],
-  ])("shows one trailing control when %s", (_name, row, status, labels) => {
+  ])("exposes the trailing actions available when %s", (_name, row, status, labels) => {
     const $ = renderRow(row, status);
     expect(siblingButtons($).map((_, button) => $(button).attr("aria-label")).get().filter(Boolean)).toEqual(labels);
   });
@@ -331,7 +348,9 @@ describe("download state", () => {
 
   it("shows no download control for chapters of a local work", () => {
     const $ = renderRow({ isDownloaded: true }, undefined, { canDeleteDownloads: false });
+    expect($("[role=img][aria-label=Downloaded]")).toHaveLength(1);
     expect(siblingButtons($)).toHaveLength(0);
+    expect(rowClickHandlers.has("Delete from device")).toBe(false);
   });
 });
 
@@ -352,7 +371,7 @@ describe("server chapter availability", () => {
 
   it("drops the dot once the chapter is downloaded", () => {
     const $ = renderRow({ serverAvailable: true, serverComplete: false, isDownloaded: true });
-    expect(siblingButtons($).attr("aria-label")).toBe("Downloaded");
+    expect($("[role=img][aria-label=Downloaded]")).toHaveLength(1);
     expect(dot($)).toBeUndefined();
     expect(describedText($)).not.toContain("server");
   });
@@ -466,7 +485,7 @@ describe("server chapter availability", () => {
     const $ = renderRow({ serverAvailable: false, isDownloaded: true, contentBytes: 100 }, undefined, { onOpen });
     expect(describedText($)).not.toContain("Not stored on the content server");
     expect(openButton($).attr("aria-disabled")).toBeUndefined();
-    expect(siblingButtons($).attr("aria-label")).toBe("Downloaded");
+    expect($("[role=img][aria-label=Downloaded]")).toHaveLength(1);
     rowClickHandlers.get("Open First chapter")?.();
     expect(onOpen).toHaveBeenCalledOnce();
   });

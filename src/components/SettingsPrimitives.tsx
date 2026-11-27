@@ -35,6 +35,8 @@ interface SettingsSectionProps {
 
 interface SettingsFieldRowProps {
   children?: ReactNode;
+  /** Keeps one line in the row and places full status and error messages in its info popover. */
+  compactStatus?: string;
   description?: string;
   /** Inline error for this row; async outcomes also show a notification. */
   error?: ReactNode;
@@ -103,6 +105,7 @@ export function SettingsSection({
 
 export function SettingsFieldRow({
   children,
+  compactStatus,
   description,
   error,
   label,
@@ -113,7 +116,7 @@ export function SettingsFieldRow({
   const descriptionId = useId();
   const labelId = useId();
   const [descriptionOpen, setDescriptionOpen] = useState(false);
-  const hasCopy = Boolean(label || description || error || status);
+  const hasCopy = Boolean(label || description || error || status || compactStatus);
   const infoDescription = Boolean(label && description);
 
   return (
@@ -135,6 +138,7 @@ export function SettingsFieldRow({
                   onChange={setDescriptionOpen}
                   opened={descriptionOpen}
                   position="bottom-start"
+                  trapFocus={Boolean(compactStatus)}
                   width="min(20rem, calc(100vw - 2rem))"
                   withArrow
                 >
@@ -150,7 +154,11 @@ export function SettingsFieldRow({
                       <InfoIcon />
                     </IconButton>
                   </Popover.Target>
-                  <Popover.Dropdown className="norea-settings-form-tooltip">{description}</Popover.Dropdown>
+                  <Popover.Dropdown className="norea-settings-form-tooltip" data-feedback={compactStatus ? true : undefined}>
+                    {compactStatus && error ? <div className="norea-settings-form-error">{error}</div> : null}
+                    {compactStatus && status ? <div>{status}</div> : null}
+                    {description}
+                  </Popover.Dropdown>
                 </Popover>
               ) : null}
             </div>
@@ -162,12 +170,13 @@ export function SettingsFieldRow({
               {description}
             </Text>
           ) : null}
-          {status ? (
-            <Text className="norea-settings-form-status" role="status">
-              {status}
+          {compactStatus || status ? (
+            <Text className="norea-settings-form-status" role="status"
+              data-compact={compactStatus ? true : undefined} data-error={compactStatus && error ? true : undefined}>
+              {compactStatus || status}
             </Text>
           ) : null}
-          {error ? (
+          {error && !compactStatus ? (
             <Text className="norea-settings-form-error" role="alert">
               {error}
             </Text>

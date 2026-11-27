@@ -474,7 +474,6 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
           count={item.entries.length}
           earliest={item.earliest}
           expanded={expanded}
-          onOpenEarliest={() => openChapter(item.earliest.chapterId)}
           onOpenNovel={() => openNovel(item.earliest.novelId)}
           onToggle={() => toggleRun(item.key)}
         />

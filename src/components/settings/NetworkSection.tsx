@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { PasswordInput, Switch, Text, TextInput } from "@mantine/core";
+import { Button, PasswordInput, Switch, Text, TextInput } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PluginVpnFinder } from "../PluginVpnFinder";
 import { SavedVpnProfilesSettings } from "../SavedVpnProfilesSettings";
@@ -16,7 +16,6 @@ import { useConfirm } from "../ui/ConfirmDialog";
 import {
   ImportIcon,
   RetryIcon,
-  SearchIcon,
   TrashIcon,
 } from "../ui/icons";
 import { VpnGateServerVerdictControl } from "../VpnGateServerVerdictControl";
@@ -490,6 +489,11 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
               />
             )}
           </SettingsFieldRow>
+          <SettingsFieldRow label={t("settings.data.pluginVpn.finder.title")}>
+            <Button disabled={finderDisabled} onClick={() => setFinderOpen(true)} variant="default">
+              {t("settings.data.pluginVpn.finder.open")}
+            </Button>
+          </SettingsFieldRow>
           <SettingsFieldRow
             label={t("settings.data.pluginVpn.profile.label")}
             description={currentProfileHost
@@ -542,14 +546,6 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
                   size="lg"
                 >
                   <ImportIcon />
-                </IconButton>
-                <IconButton
-                  disabled={finderDisabled}
-                  label={t("settings.data.pluginVpn.finder.open")}
-                  onClick={() => setFinderOpen(true)}
-                  size="lg"
-                >
-                  <SearchIcon />
                 </IconButton>
                 {status?.profile ? (
                   <IconButton

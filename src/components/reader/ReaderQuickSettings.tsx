@@ -1,6 +1,7 @@
-import { Button, Menu, Tabs } from "@mantine/core";
+import { Button, Menu, Switch, Tabs } from "@mantine/core";
 import { useState } from "react";
-import type { TranslationKey } from "../../i18n";
+import { useTranslation, type TranslationKey } from "../../i18n";
+import { useLibraryStore } from "../../store/library";
 import { BackIconButton } from "../BackIconButton";
 import { IconButton } from "../IconButton";
 import {
@@ -17,6 +18,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  HistoryPausedIcon,
   MinusIcon,
   PlusIcon,
 } from "../ui/icons";
@@ -70,6 +72,7 @@ export function ReaderQuickSettings({ content, target }: ReaderQuickSettingsProp
         <div className="norea-reader-quick-body">
           {fields.scope}
           {fields.lockedNotice}
+          <PauseHistorySwitch />
         </div>
       </div>
     );
@@ -208,6 +211,7 @@ export function ReaderQuickSettings({ content, target }: ReaderQuickSettingsProp
           {fields.alignment}
           {paged ? null : fields.autoScroll}
         </SettingsSection>
+        <PauseHistorySwitch />
         <button
           className="norea-reader-quick-more norea-state-layer"
           onClick={() => setLevel("more")}
@@ -219,6 +223,26 @@ export function ReaderQuickSettings({ content, target }: ReaderQuickSettingsProp
       </div>
       {fields.resetConfirmation}
     </div>
+  );
+}
+
+function PauseHistorySwitch() {
+  const { t } = useTranslation();
+  const paused = useLibraryStore((state) => state.incognitoMode);
+  const setPaused = useLibraryStore((state) => state.setIncognitoMode);
+  return (
+    <Switch
+      checked={paused}
+      description={t("more.pauseHistory.description")}
+      label={
+        <span className="norea-reader-history-label">
+          <HistoryPausedIcon aria-hidden="true" size="1rem" />
+          {t("more.pauseHistory")}
+        </span>
+      }
+      labelPosition="left"
+      onChange={(event) => setPaused(event.currentTarget.checked)}
+    />
   );
 }
 

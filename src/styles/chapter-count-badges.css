@@ -1,0 +1,59 @@
+.norea-library-card-progress {
+  background: var(--norea-color-accent);
+  bottom: 0;
+  height: 0.1875rem;
+  left: 0;
+  position: absolute;
+  transition: width var(--norea-duration-base) var(--norea-ease-standard);
+  width: var(--norea-library-progress);
+  z-index: 2;
+}
+
+/* Downloaded and unread counts share one pill on one line, so four-digit counts never wrap. */
+.norea-library-badge-group {
+  border-radius: var(--norea-radius-sm);
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.norea-library-badge-group > .norea-library-badge {
+  border-radius: 0;
+  flex: 0 0 auto;
+}
+
+/* When space runs short the downloaded count gives way first, clipped on its line rather than wrapping. */
+.norea-library-badge-group > .norea-library-badge[data-kind="downloaded"] {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.norea-library-badge {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink);
+  display: inline-flex;
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--norea-weight-bold);
+  gap: 0.125rem;
+  line-height: 1;
+  padding: 0.1875rem var(--norea-space-1);
+}
+
+.norea-library-badge[data-kind="unread"] {
+  background: var(--norea-color-accent);
+  color: var(--norea-color-on-accent);
+}
+
+/* Only unread is filled with the accent; downloaded stays neutral so the two never read as the same green. */
+.norea-library-badge[data-kind="downloaded"] {
+  color: var(--norea-color-ink-muted);
+}
+
+.norea-library-badge[data-kind="downloaded"][data-goal-state="attention"] {
+  color: var(--norea-color-warn);
+}

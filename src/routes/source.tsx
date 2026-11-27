@@ -1,3 +1,4 @@
+import { formatUserCategoryName } from "../components/UserCategoryName";
 import {
   useCallback,
   useEffect,
@@ -45,10 +46,7 @@ import {
   CloseIcon,
   FilterIcon,
   InLibraryIcon,
-  ReaderSettingsIcon,
   SearchIcon,
-  SettingsIcon,
-  SourceIcon,
   ViewOptionsIcon,
 } from "../components/ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
@@ -322,7 +320,7 @@ function SourceNovelButton({
   plugin,
 }: SourceNovelButtonProps) {
   const { t } = useTranslation();
-  const categoryText = categories.join(", ");
+  const categoryText = categories.map(formatUserCategoryName).join(", ");
 
   if (displayMode === "list") {
     return (
@@ -353,7 +351,7 @@ function SourceNovelButton({
           {categoryText ? (
             <span
               aria-label={`${t("categories.title")}: ${categoryText}`}
-              className="norea-list-item-subtitle norea-source-row-categories"
+              className="norea-list-item-subtitle norea-source-row-categories norea-user-category-name"
               title={categoryText}
             >
               {categoryText}
@@ -402,7 +400,7 @@ function SourceNovelButton({
             {categoryText ? (
               <span
                 aria-label={`${t("categories.title")}: ${categoryText}`}
-                className="norea-source-catalog-card-categories"
+                className="norea-source-catalog-card-categories norea-user-category-name"
                 title={categoryText}
               >
                 {categoryText}
@@ -419,7 +417,7 @@ function SourceNovelButton({
           {categoryText ? (
             <span
               aria-label={`${t("categories.title")}: ${categoryText}`}
-              className="norea-source-catalog-card-categories"
+              className="norea-source-catalog-card-categories norea-user-category-name"
               title={categoryText}
             >
               {categoryText}
@@ -856,11 +854,11 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     applyFilters({ ...activeFilters, [key]: empty });
   };
   const overflowItems: OverflowMenuItem[] = [
+    { label: t("common.openSite"), onClick: openSite },
     ...(hasPluginInputs(plugin)
-      ? [{ icon: SettingsIcon, label: t("source.sourceSettings"), onClick: () => setSettingsOpen(true) }]
+      ? [{ label: t("source.sourceSettings"), onClick: () => setSettingsOpen(true) }]
       : []),
     {
-      icon: ReaderSettingsIcon,
       label: t("source.readerSettings"),
       onClick: () => setReaderSettingsOpen(true),
     },
@@ -915,22 +913,15 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
               </>
             )}
             <IconButton
+              aria-expanded={displaySheetOpen}
+              aria-haspopup="dialog"
               label={t("library.viewOptions.display")}
               onClick={() => setDisplaySheetOpen(true)}
               size="lg"
             >
               <ViewOptionsIcon />
             </IconButton>
-            <IconButton label={t("common.openSite")} onClick={openSite} size="lg">
-              <SourceIcon />
-            </IconButton>
-            {hasPluginInputs(plugin) ? (
-              <OverflowMenu items={overflowItems} label={t("common.more")} />
-            ) : (
-              <IconButton label={t("source.readerSettings")} onClick={() => setReaderSettingsOpen(true)} size="lg">
-                <ReaderSettingsIcon />
-              </IconButton>
-            )}
+            <OverflowMenu items={overflowItems} label={t("common.more")} />
           </>
         }
         onBack={goBack}

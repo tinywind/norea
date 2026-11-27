@@ -1,4 +1,4 @@
-import { Popover, Progress, Stack, Text } from "@mantine/core";
+import { Popover, Progress, Stack, Text, VisuallyHidden } from "@mantine/core";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   memo,
@@ -13,8 +13,6 @@ import {
 } from "react";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import {
-  ArrowDownGlyph,
-  ArrowUpGlyph,
   CloseGlyph,
   RetryGlyph,
 } from "../components/ActionGlyphs";
@@ -512,7 +510,7 @@ const TaskRow = memo(function TaskRow({
       data-status={currentTask.status}
       onClick={onSelect}
       onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
           event.preventDefault();
           onSelect();
         }
@@ -598,28 +596,15 @@ const TaskRow = memo(function TaskRow({
       </div>
       <div className="norea-task-row-actions">
         {showActions && canMove ? (
-          <>
-            <IconButton
-              disabled={currentTask.queueIndex === 0}
-              label={t("tasks.moveTaskTop")}
-              onClick={() =>
-                taskScheduler.moveQueuedTask(currentTask.id, "top")
-              }
-              size="lg"
-            >
-              <ArrowUpGlyph />
-            </IconButton>
-            <IconButton
-              disabled={currentTask.queueIndex === currentTask.queueSize! - 1}
-              label={t("tasks.moveTaskBottom")}
-              onClick={() =>
-                taskScheduler.moveQueuedTask(currentTask.id, "bottom")
-              }
-              size="lg"
-            >
-              <ArrowDownGlyph />
-            </IconButton>
-          </>
+          <OverflowMenu
+            label={t("common.more")}
+            items={[
+              { label: t("tasks.moveTaskTop"), disabled: currentTask.queueIndex === 0,
+                onClick: () => taskScheduler.moveQueuedTask(currentTask.id, "top") },
+              { label: t("tasks.moveTaskBottom"), disabled: currentTask.queueIndex === currentTask.queueSize! - 1,
+                onClick: () => taskScheduler.moveQueuedTask(currentTask.id, "bottom") },
+            ]}
+          />
         ) : null}
         {showActions && currentTask.canCancel ? (
           <IconButton
@@ -888,7 +873,9 @@ function NovelWorkGroup({
     if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
   };
   const items: OverflowMenuItem[] = [
-    { icon: ChevronDownIcon, label: t("tasks.moveWorkBottom"), disabled: !canMove,
+    { label: t("tasks.moveWorkTop"), disabled: !canMove,
+      onClick: () => taskScheduler.moveSourceWorkQueue(sourceId, group.workKey, "top") },
+    { label: t("tasks.moveWorkBottom"), disabled: !canMove,
       onClick: () => taskScheduler.moveSourceWorkQueue(sourceId, group.workKey, "bottom") },
   ];
   if (!snapshot.sourceQueuesPaused) {
@@ -935,14 +922,6 @@ function NovelWorkGroup({
             size="lg"
           >
             <ChevronDownIcon />
-          </IconButton>
-          <IconButton
-            disabled={!canMove}
-            label={`${t("tasks.moveWorkTop")}: ${group.title}`}
-            onClick={() => taskScheduler.moveSourceWorkQueue(sourceId, group.workKey, "top")}
-            size="lg"
-          >
-            <ArrowUpGlyph />
           </IconButton>
           <OverflowMenu items={items} label={t("vpnDownload.workOptions", { title: group.title })} />
         </div>
@@ -993,12 +972,14 @@ function useHasDownloadAttention(
 function NeedsAttentionSection({
   active,
   blocks,
+  headerHasWarning,
   sectionRef,
   snapshot,
   vpn,
 }: {
   active: boolean;
   blocks: readonly SourceAccessBlock[];
+  headerHasWarning: boolean;
   sectionRef: RefObject<HTMLElement | null>;
   snapshot: TaskSnapshot;
   vpn: ReturnType<typeof useVpnDownloadRuntimeSnapshot>;
@@ -1010,9 +991,14 @@ function NeedsAttentionSection({
       className="norea-downloads-attention"
       ref={sectionRef}
     >
-      <Text className="norea-downloads-section-title" component="h2" id="norea-downloads-attention-title">
-        {t("vpnDownload.attention.title")}
-      </Text>
+      {headerHasWarning ? (
+        <VisuallyHidden component="h2" id="norea-downloads-attention-title">{t("vpnDownload.attention.title")}</VisuallyHidden>
+      ) : (
+        <h2 className="norea-queue-attention-band" id="norea-downloads-attention-title">
+          <WarningIcon />
+          {t("vpnDownload.attention.title")}
+        </h2>
+      )}
       {groupSourceAccessBanners(blocks).map((group) => (
         <SourceAccessBannerGroup
           entries={group.blocks.map(block => ({ block, sourceNames: sourceAccessBlockSourceNames(block, snapshot) }))}
@@ -1126,7 +1112,7 @@ interface DownloadsQueueViewProps {
   active?: boolean;
   /** Leaves Downloads; the page header's back button. */
   onBack?: () => void;
-  /** The Queue and Storage tabs, drawn in the bar in place of the title. */
+  /** The shared Queue and Storage navigation in the page header. */
   viewTabs?: ReactNode;
 }
 
@@ -1135,7 +1121,7 @@ export function DownloadsQueueView({
   onBack,
   viewTabs,
 }: DownloadsQueueViewProps = {}) {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const navigate = useNavigate();
   const confirm = useConfirm();
   const snapshot = useTaskSnapshot(active);
@@ -1334,12 +1320,12 @@ export function DownloadsQueueView({
   overflowItems.push({ icon: CloseIcon, label: t("tasks.cancelAllCurrent"), danger: true,
     disabled: !hasCancellableTasks || queueActionPending, onClick: () => { void cancelAll(); } });
   const hasDownloads = novelWorks.length > 0 || requests.length > 0 || vpnWorks.length > 0;
-  // Counts read as one muted line with zeros left out; only a warning the user can act on stays a pill.
+  // Omit zero counts so the queue summary stays compact.
   const countParts = [
-    taskStats.running > 0 ? t("tasks.summary.running", { count: taskStats.running }) : null,
-    taskStats.queued > 0 ? t("tasks.summary.queued", { count: taskStats.queued }) : null,
-    taskStats.retrying > 0 ? t("tasks.summary.retrying", { count: taskStats.retrying }) : null,
-    taskStats.succeeded > 0 ? t("tasks.summary.done", { count: taskStats.succeeded }) : null,
+    taskStats.running > 0 ? t("tasks.summary.running", { count: taskStats.running.toLocaleString(locale) }) : null,
+    taskStats.queued > 0 ? t("tasks.summary.queued", { count: taskStats.queued.toLocaleString(locale) }) : null,
+    taskStats.retrying > 0 ? t("tasks.summary.retrying", { count: taskStats.retrying.toLocaleString(locale) }) : null,
+    taskStats.succeeded > 0 ? t("tasks.summary.done", { count: taskStats.succeeded.toLocaleString(locale) }) : null,
   ].filter((part) => part !== null);
   // A scope count is also a source count only when each ordinary source occurs once.
   const blockedCountKey = snapshot.sourceAccessBlocks.every(block => block.rangeId === undefined) &&
@@ -1347,27 +1333,30 @@ export function DownloadsQueueView({
     ? "tasks.summary.blockedSources" : "tasks.summary.blocked";
   const warningParts = [
     snapshot.sourceAccessBlocks.length > 0
-      ? t(blockedCountKey, { count: snapshot.sourceAccessBlocks.length })
+      ? t(blockedCountKey, { count: snapshot.sourceAccessBlocks.length.toLocaleString(locale) })
       : null,
-    taskStats.failed > 0 ? t("tasks.summary.failed", { count: taskStats.failed }) : null,
+    taskStats.failed > 0 ? t("tasks.summary.failed", { count: taskStats.failed.toLocaleString(locale) }) : null,
   ].filter((part) => part !== null);
   const metaParts = hasAttention ? countParts : [...countParts, ...warningParts];
   const showWarning = hasAttention && warningParts.length > 0;
   const summaryRow = vpnWorks.length === 0 && (metaParts.length > 0 || showWarning) ? (
-    <div className="norea-downloads-subrow">
+    <div className="norea-downloads-queue-summary">
       {metaParts.length > 0 ? (
         <span className="norea-app-bar-meta norea-downloads-summary">{metaParts.join(" · ")}</span>
       ) : null}
       {showWarning ? (
-        <button
-          aria-label={t("downloads.queue.showAttention", { summary: warningParts.join(" · ") })}
-          className="norea-downloads-warning norea-state-layer"
-          onClick={() => attentionRef.current?.scrollIntoView({ block: "start" })}
-          type="button"
-        >
+        <div className="norea-queue-attention-band">
           <WarningIcon />
-          {warningParts.join(" · ")}
-        </button>
+          <span>{t("vpnDownload.attention.title")}</span>
+          <button
+            aria-label={t("downloads.queue.showAttention", { summary: warningParts.join(" · ") })}
+            className="norea-downloads-warning norea-state-layer"
+            onClick={() => attentionRef.current?.scrollIntoView({ block: "start" })}
+            type="button"
+          >
+            {warningParts.join(" · ")}
+          </button>
+        </div>
       ) : null}
     </div>
   ) : undefined;
@@ -1422,7 +1411,14 @@ export function DownloadsQueueView({
       {active ? <DownloadRecoveryStatus /> : null}
 
       {hasAttention ? (
-        <NeedsAttentionSection active={active} blocks={ordinaryBlocks} sectionRef={attentionRef} snapshot={snapshot} vpn={vpn} />
+        <NeedsAttentionSection
+          active={active}
+          blocks={ordinaryBlocks}
+          headerHasWarning={vpnWorks.length === 0 && showWarning}
+          sectionRef={attentionRef}
+          snapshot={snapshot}
+          vpn={vpn}
+        />
       ) : null}
       {vpnLaunchOpened ? <VpnDownloadLaunchDialog snapshot={vpn} onClose={() => setVpnLaunchOpened(false)} /> : null}
       <TaskSortSheet onClose={() => setSortOpened(false)} opened={active && sortOpened} />

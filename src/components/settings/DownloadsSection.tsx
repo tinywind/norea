@@ -317,7 +317,6 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
             size="lg"
             tone="danger"
             disabled={isBusy}
-            loading={isBusy}
             onClick={() => setCleanupOpened(true)}
           >
             <TrashIcon />

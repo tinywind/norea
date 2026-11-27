@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { NumberInput, Popover, Select, Text, TextInput } from "@mantine/core";
+import { Button, NumberInput, Select, Text, TextInput } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { invoke } from "@tauri-apps/api/core";
@@ -15,24 +15,21 @@ import { useContentSyncStore } from "../store/content-sync";
 import { BatteryOptimizationSetting } from "./BatteryOptimizationSetting";
 import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
-import { BrowseIcon, RescanIcon, ResetIcon, SaveIcon, SyncIcon } from "./ui/icons";
+import { OverflowMenu } from "./ui/OverflowMenu";
+import { BrowseIcon, ResetIcon, SaveIcon } from "./ui/icons";
 import { ReadingStateSettings } from "./ReadingStateSettings";
 import { showSettingsToast } from "./settings/settings-toast";
 
 /** A sync failure as one plain sentence; the raw error stays one tap away for reports. */
 function ContentSyncErrorLine({ error }: { error: string }) {
   const { t } = useTranslation();
+  const [showRaw, setShowRaw] = useState(false);
   return (
     <>
       {t(contentSyncErrorKey(error))}
-      <Popover position="bottom-start" shadow="md">
-        <Popover.Target>
-          <button className="norea-settings-form-error-details" type="button">{t("common.details")}</button>
-        </Popover.Target>
-        <Popover.Dropdown>
-          <Text className="norea-settings-form-error-raw" size="sm">{error}</Text>
-        </Popover.Dropdown>
-      </Popover>
+      <button aria-expanded={showRaw} className="norea-settings-form-error-details" type="button"
+        onClick={() => setShowRaw(!showRaw)}>{t("common.details")}</button>
+      <Text className="norea-settings-form-error-raw" hidden={!showRaw} size="sm">{error}</Text>
     </>
   );
 }
@@ -72,6 +69,10 @@ export function ContentServerSettings() {
   const effectiveBlocked = blocked || (!error && Boolean(backgroundBlocked));
   const effectiveError = error || backgroundError || null;
   const syncError = actionError || (effectiveBlocked ? blockedMessage : effectiveError);
+  const compactStatus = syncError ? t("tasks.status.failed")
+    : status === "syncing" ? t("contentSync.status.syncing")
+    : !serverUrl ? t("contentSync.status.disconnected")
+    : progress ? t("contentSync.status.checked", progress) : t("contentSync.status.idle");
   const syncStatus = [
     status === "syncing" ? t("contentSync.background") : null,
     progress ? t("contentSync.progress", progress) : null,
@@ -153,16 +154,17 @@ export function ContentServerSettings() {
         </SettingsFieldRow>
       ) : null}
       <SettingsFieldRow label={t("contentSync.manualSync")} description={t("contentSync.rescanDescription")}
-        status={syncStatus} error={syncError && syncError !== blockedMessage ? <ContentSyncErrorLine error={syncError} /> : syncError}>
+        compactStatus={compactStatus} status={syncStatus}
+        error={syncError && syncError !== blockedMessage ? <ContentSyncErrorLine error={syncError} /> : syncError}>
         <SettingsInlineControls>
-          <IconButton label={t("contentSync.syncNow")} size="lg" loading={status === "syncing"} disabled={!serverUrl || busy}
-            onClick={() => startSync()}>
-            <SyncIcon />
-          </IconButton>
-          <IconButton label={t("contentSync.rescan")} size="lg" disabled={disabled || status === "syncing" || !serverUrl}
-            onClick={() => startSync(true)}>
-            <RescanIcon />
-          </IconButton>
+          <Button loading={status === "syncing"} disabled={!serverUrl || busy} onClick={() => startSync()} variant="default">
+            {t("contentSync.syncNow")}
+          </Button>
+          <OverflowMenu
+            disabled={disabled || status === "syncing" || !serverUrl}
+            items={[{ label: t("contentSync.rescan"), onClick: () => startSync(true) }]}
+            label={t("common.more")}
+          />
         </SettingsInlineControls>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("contentSync.catalog")} description={t("contentSync.browseHint")}>

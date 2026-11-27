@@ -346,7 +346,9 @@ it("offers refresh, source and reader settings directly and keeps advanced work 
   mocks.novel.inLibrary = true;
   mocks.installed = true;
   try {
-    expect(await overflowLabels()).toEqual(["novel.refreshAllDetails", "novel.metadataOverride.edit", "novel.mergeSource"]);
+    expect(await overflowLabels()).toEqual([
+      "novel.refreshAllDetails", "novel.metadataOverride.edit", "novel.mergeSource", "novel.removeFromLibrary",
+    ]);
     await withPageTree(async (find, run) => {
       const refresh = find((props) => props.label === "novel.checkNewChapters")!;
       expect(refresh.props.disabled).toBe(false);
@@ -407,7 +409,8 @@ it("preserves a complete local chapter when its server copy is incomplete", () =
 
   const $ = renderPage();
   expect($("button[aria-label='novel.openChapter']").text()).not.toContain("novel.server");
-  expect($("button[aria-label='novel.downloaded']")).toHaveLength(1);
+  expect($("[role='img'][aria-label='novel.downloaded']")).toHaveLength(1);
+  expect($("button[aria-label='novel.chapterMore']")).toHaveLength(1);
   expect($.text()).not.toContain("novel.mediaRepairNeeded");
   expect($("button[aria-label='novel.downloadChapter']")).toHaveLength(0);
   expect($("button[aria-label='novel.repair']")).toHaveLength(0);

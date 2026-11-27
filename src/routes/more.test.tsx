@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const taskAttention = vi.hoisted(() => ({ count: 0 }));
+const tasks = vi.hoisted(() => ({ active: 0, failed: 0 }));
 const pluginUpdates = vi.hoisted(() => ({ count: 0 }));
 const library = vi.hoisted(() => ({
   incognitoMode: false,
@@ -35,7 +35,7 @@ vi.mock("@tanstack/react-router", () => ({
   },
 }));
 vi.mock("../lib/tasks/hooks", () => ({
-  useTaskAttentionCount: () => taskAttention.count,
+  useTaskBadgeCounts: () => tasks,
 }));
 vi.mock("../components/browse/use-plugin-catalog", () => ({
   usePluginUpdateCount: () => pluginUpdates.count,
@@ -61,7 +61,8 @@ function linkHrefs(markup: string): string[] {
 
 describe("More page", () => {
   afterEach(() => {
-    taskAttention.count = 0;
+    tasks.active = 0;
+    tasks.failed = 0;
     pluginUpdates.count = 0;
     library.incognitoMode = false;
   });
@@ -90,12 +91,12 @@ describe("More page", () => {
     for (const state of states) expect(isOpenedFromMore(state)).toBe(true);
   });
 
-  it("badges Downloads with active and failed tasks", () => {
-    taskAttention.count = 4;
+  it("labels active and failed downloads separately", () => {
+    tasks.active = 3;
+    tasks.failed = 1;
     const markup = renderMorePage();
 
-    expect(markup).toContain('<span class="norea-more-row-badge">4</span>');
-    expect(markup.match(/norea-more-row-badge/g)).toHaveLength(1);
+    expect(markup).toContain("Active: 3 · Failed: 1");
   });
 
   it("badges Extensions with the plugin update count", () => {
@@ -116,7 +117,7 @@ describe("More page", () => {
         /<input data-checked="(true|false)"[^>]*role="switch"/,
       )?.[1];
 
-    expect(renderMorePage()).toContain("Pause reading history");
+    expect(renderMorePage()).toContain("Pause reading timestamps");
     expect(switchState()).toBe("false");
 
     library.incognitoMode = true;

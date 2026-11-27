@@ -89,15 +89,26 @@ it("tells the unread and downloaded badges apart by icon and hover label", () =>
   expect(downloaded.find("svg").attr("class")).toContain("tabler-icon-cloud-check");
 });
 
-it("keeps the downloaded and unread counts in one pill that never wraps", () => {
-  const $ = renderGrid("comfortable");
-  const group = $(".norea-library-badge-group").first();
-  expect(group.children('[data-kind="downloaded"]')).toHaveLength(1);
-  expect(group.children('[data-kind="unread"]')).toHaveLength(1);
-  const css = readFileSync(new URL("../styles/library.css", import.meta.url), "utf8");
-  expect(css).toMatch(/\.norea-library-badges \{[^}]*flex-wrap: nowrap;/);
-  expect(css).toMatch(/\.norea-library-badge-group \{[^}]*display: inline-flex;/);
-});
+it.each<LibraryDisplayMode>(["comfortable", "compact"])(
+  "keeps just unread on the %s cover and shows the download below it",
+  (displayMode) => {
+    const first = renderGrid(displayMode)("li > button").first();
+    const coverBadges = first.find(".norea-library-card-cover [data-kind]");
+    expect(coverBadges).toHaveLength(1);
+    expect(coverBadges.attr("data-kind")).toBe("unread");
+    expect(first.find('.norea-library-card-meta [data-kind="downloaded"]')).toHaveLength(1);
+  },
+);
+
+it.each<LibraryDisplayMode>(["cover-only", "list"])(
+  "keeps downloaded and unread together in %s mode",
+  (displayMode) => {
+    const first = renderGrid(displayMode)("li > button").first();
+    expect(first.find('.norea-library-badge-group [data-kind="downloaded"]')).toHaveLength(1);
+    expect(first.find('.norea-library-badge-group [data-kind="unread"]')).toHaveLength(1);
+    expect(first.find(".norea-library-card-meta")).toHaveLength(0);
+  },
+);
 
 it("leaves the counts untouched while selecting and draws the check as a ring in the bottom corner", () => {
   const css = readFileSync(new URL("../styles/library.css", import.meta.url), "utf8");
@@ -171,8 +182,11 @@ it.each<LibraryDisplayMode>(["comfortable", "compact", "list"])(
       ));
 
     const allTab = renderWithTab(null);
-    const allLabels = allTab('[aria-label^="categories.title:"]').map((_, el) => allTab(el).text()).get();
-    expect(allLabels).toEqual(["Star, Reading", "Reading"]);
+    const labels = allTab('[aria-label^="categories.title:"]');
+    expect(labels.map((_, el) => allTab(el).text()).get()).toEqual(["Star, Reading", "Reading"]);
+    if (displayMode !== "list") {
+      expect(labels.filter(".norea-library-card-meta > *")).toHaveLength(2);
+    }
 
     const readingTab = renderWithTab(2);
     const readingLabels = readingTab('[aria-label^="categories.title:"]').map((_, el) => readingTab(el).text()).get();
@@ -180,7 +194,7 @@ it.each<LibraryDisplayMode>(["comfortable", "compact", "list"])(
   },
 );
 
-it("keeps categories hidden in covers-only mode and styles compact categories as high-contrast pills", () => {
+it("keeps categories hidden in covers-only mode", () => {
   const categorized: LibraryNovel = {
     ...novel,
     categories: [{ id: 1, name: "Star" }],
@@ -199,9 +213,6 @@ it("keeps categories hidden in covers-only mode and styles compact categories as
     </MantineProvider>,
   ));
   expect($('[aria-label^="categories.title:"]')).toHaveLength(0);
-  const css = readFileSync(new URL("../styles/library.css", import.meta.url), "utf8");
-  expect(css).toMatch(/\.norea-library-card-overlay \.norea-library-card-categories \{[^}]*background: var\(--norea-color-accent\);/);
-  expect(css).toMatch(/\.norea-library-card-overlay \.norea-library-card-categories \{[^}]*color: var\(--norea-color-on-accent\);/);
 });
 
 it.each<LibraryDisplayMode>(["comfortable", "list"])("announces one busy status for the %s loading skeleton", (displayMode) => {

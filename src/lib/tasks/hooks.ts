@@ -16,18 +16,19 @@ export function useTaskSnapshot(active = true): TaskSnapshot {
   );
 }
 
-function getTaskAttentionCount(): number {
-  const { failed, queued, running } = taskScheduler.getSnapshot();
-  return running + queued + failed;
+let taskBadgeCounts = { active: 0, failed: 0 };
+
+function getTaskBadgeCounts() {
+  const { queued, running, failed } = taskScheduler.getSnapshot();
+  const active = queued + running;
+  if (taskBadgeCounts.active !== active || taskBadgeCounts.failed !== failed) {
+    taskBadgeCounts = { active, failed };
+  }
+  return taskBadgeCounts;
 }
 
-/** Counts active (running or queued) and failed tasks for navigation badges. */
-export function useTaskAttentionCount(): number {
-  return useSyncExternalStore(
-    taskScheduler.subscribe,
-    getTaskAttentionCount,
-    getTaskAttentionCount,
-  );
+export function useTaskBadgeCounts() {
+  return useSyncExternalStore(taskScheduler.subscribe, getTaskBadgeCounts, getTaskBadgeCounts);
 }
 
 export function useVpnDownloadRuntimeSnapshot(active = true) {

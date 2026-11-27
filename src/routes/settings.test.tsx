@@ -89,7 +89,7 @@ describe("settings sections", () => {
     const markup = renderSettings("library");
 
     expect(markup).toContain("Default library category");
-    expect(markup).not.toContain("Pause reading history");
+    expect(markup).not.toContain("Pause reading timestamps");
   });
 
   it.each([

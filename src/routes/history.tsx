@@ -208,7 +208,7 @@ export function HistoryPage() {
   };
   const confirmRemove = async (entry: RecentlyReadEntry) => {
     const confirmed = await confirm({
-      confirmLabel: t("common.remove"),
+      confirmLabel: t("history.remove"),
       danger: true,
       message: t("history.removeConfirm.message", { name: entry.novelName }),
       title: t("history.removeConfirm.title"),

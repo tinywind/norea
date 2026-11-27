@@ -120,6 +120,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
     openSettingsSearchResult(result, selectSection);
   const searching = searchQuery.trim() !== "";
   const busy: SettingsBusyProps = {
+    busyAction,
     isBusy: busyAction !== null,
     onBusyChange: setBusyAction,
   };

@@ -1,3 +1,4 @@
+import { UserCategoryName } from "../UserCategoryName";
 import { useId, useMemo, useState } from "react";
 import { Checkbox, Radio, Stack, Text, TextInput } from "@mantine/core";
 import { useTranslation } from "../../i18n";
@@ -227,7 +228,7 @@ export function ServerBrowseFilters({
             onClick={() => toggleCategory(categoryId)}
             selected
           >
-            {categoryNameById.get(categoryId) ?? categoryId}
+            <UserCategoryName name={categoryNameById.get(categoryId) ?? categoryId} />
           </ChipButton>
         ))}
         {uncategorized ? (
@@ -305,7 +306,7 @@ export function ServerBrowseFilters({
                     key={option.id}
                     label={
                       <span className="norea-library-option-label">
-                        <span className="norea-library-option-text">{option.name}</span>
+                        <span className="norea-library-option-text">{option.id === UNCATEGORIZED_VALUE ? option.name : <UserCategoryName name={option.name} />}</span>
                         <span className="norea-library-option-count">
                           {option.workCount.toLocaleString()}
                         </span>

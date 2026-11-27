@@ -55,10 +55,11 @@ import {
   DownloadIcon,
   ImportIcon,
   RefreshAllIcon,
+  RemoveFromLibraryIcon,
   SettingsIcon,
 } from "../components/ui/icons";
 import type { OverflowMenuItem } from "../components/ui/OverflowMenu";
-import { SelectionAction, SelectionBar, SelectionOverflowMenu } from "../components/ui/SelectionBar";
+import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
 import { showErrorToast } from "../lib/runtime/error-toast";
@@ -185,9 +186,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const [downloadSheetOpen, setDownloadSheetOpen] = useState(false);
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
   const [viewOptionsTab, setViewOptionsTab] =
-    useState<LibraryViewOptionsTab>("filter");
-  const openViewOptions = useCallback((tab?: LibraryViewOptionsTab) => {
-    if (tab) setViewOptionsTab(tab);
+    useState<LibraryViewOptionsTab>("display");
+  const openViewOptions = useCallback((tab: LibraryViewOptionsTab) => {
+    setViewOptionsTab(tab);
     setViewOptionsOpen(true);
   }, []);
 
@@ -381,11 +382,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       onClick: openLocalImportInput,
     },
     {
-      icon: CategoryIcon,
-      label: t("library.manageCategories"),
-      onClick: () => setCategoryManagerOpen(true),
-    },
-    {
       icon: SettingsIcon,
       label: t("library.settings.title"),
       onClick: () => {
@@ -408,73 +404,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         <div className="norea-library-shell">
           {active && selectionMode ? (
             <SelectionBar
-              actions={
-                <>
-                  <SelectionAction
-                    disabled={selectedIds.size === 0 || downloadOnceMutation.isPending}
-                    icon={DownloadIcon}
-                    label={t("library.selection.download")}
-                    onClick={() => { downloadOnceMutation.reset(); setDownloadSheetOpen(true); }}
-                  />
-                  <SelectionAction
-                    disabled={selectedIds.size === 0}
-                    icon={CategoryIcon}
-                    label={t("library.selection.categories")}
-                    onClick={() => setCategorySheetOpen(true)}
-                  />
-                  <SelectionAction
-                    aria-label={t("library.selection.markRead")}
-                    disabled={selectedIds.size === 0 || setNovelsReadStateMutation.isPending}
-                    icon={MarkReadIcon}
-                    label={t("selection.markRead")}
-                    onClick={() => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: false })}
-                  />
-                  <SelectionAction
-                    aria-label={t("library.selection.markUnread")}
-                    disabled={selectedIds.size === 0 || setNovelsReadStateMutation.isPending}
-                    icon={MarkUnreadIcon}
-                    label={t("selection.markUnread")}
-                    onClick={() => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: true })}
-                  />
-                  <SelectionOverflowMenu
-                    items={[
-                      {
-                        disabled: selectedIds.size === 0 || refreshAllMetadataMutation.isPending,
-                        icon: RefreshAllIcon,
-                        label: t("novel.refreshAllDetails"),
-                        onClick: () => refreshAllMetadataMutation.mutate({ novelIds: selectedNovelIds }),
-                      },
-                      {
-                        disabled:
-                          !selectedDownloadedChapterCount ||
-                          deleteSelectedDownloadsMutation.isPending,
-                        icon: TrashIcon,
-                        label: t("library.deleteSelectedDownloads"),
-                        onClick: () =>
-                          deleteSelectedDownloadsMutation.mutate({
-                            downloadedChapters: selectedDownloadedChapterCount ?? 0,
-                            novelIds: selectedNovelIds,
-                          }),
-                      },
-                      {
-                        danger: true,
-                        disabled: removeSelectedFromLibraryMutation.isPending,
-                        icon: TrashIcon,
-                        label: t("library.removeSelectedFromLibrary"),
-                        onClick: () =>
-                          removeSelectedFromLibraryMutation.mutate({
-                            downloadedCount: selectedDownloadedChapterCount,
-                            novelIds: selectedNovelIds,
-                          }),
-                      },
-                    ]}
-                    disabled={selectedIds.size === 0}
-                    label={t("common.more")}
-                  />
-                </>
-              }
               allSelected={selectedIds.size > 0 && selectedIds.size >= summary.totalNovels}
-              label={t("library.selectedCount", { count: selectedIds.size })}
+              label={t("library.selectedWorkChapters", { count: selectedIds.size })}
               onDeselectAll={clearSelection}
               onExit={exitSelection}
               onSelectAll={() => selectAllMutation.mutate()}
@@ -489,7 +420,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
           ) : (
           <LibraryAppBar
             categoryTabs={categoryTabs}
-            onOpenViewOptions={() => openViewOptions()}
+            onManageCategories={() => setCategoryManagerOpen(true)}
+            onOpenViewOptions={() => openViewOptions("display")}
             onRefresh={() => metadataRefreshMutation.mutate()}
             onSearchChange={setSearch}
             overflowItems={overflowItems}
@@ -631,6 +563,63 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
           </section>
           </div>
+          {active && selectionMode ? (
+            <div aria-label={t("library.selectedWorkChapters", { count: selectedIds.size })} className="norea-library-selection-actions" role="group">
+              <SelectionAction
+                disabled={selectedIds.size === 0 || downloadOnceMutation.isPending}
+                icon={DownloadIcon}
+                label={t("library.selection.download")}
+                onClick={() => { downloadOnceMutation.reset(); setDownloadSheetOpen(true); }}
+              />
+              <SelectionAction
+                disabled={selectedIds.size === 0}
+                icon={CategoryIcon}
+                label={t("library.selection.categories")}
+                onClick={() => setCategorySheetOpen(true)}
+              />
+              <SelectionAction
+                aria-label={t("library.selection.markRead")}
+                disabled={selectedIds.size === 0 || setNovelsReadStateMutation.isPending}
+                icon={MarkReadIcon}
+                label={t("selection.markRead")}
+                onClick={() => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: false })}
+              />
+              <SelectionAction
+                aria-label={t("library.selection.markUnread")}
+                disabled={selectedIds.size === 0 || setNovelsReadStateMutation.isPending}
+                icon={MarkUnreadIcon}
+                label={t("selection.markUnread")}
+                onClick={() => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: true })}
+              />
+              <SelectionAction
+                aria-label={t("novel.refreshAllDetails")}
+                disabled={selectedIds.size === 0 || refreshAllMetadataMutation.isPending}
+                icon={RefreshAllIcon}
+                label={t("library.selection.refreshInfo")}
+                onClick={() => refreshAllMetadataMutation.mutate({ novelIds: selectedNovelIds })}
+              />
+              <SelectionAction
+                aria-label={t("library.deleteSelectedDownloads")}
+                color="danger"
+                disabled={!selectedDownloadedChapterCount || deleteSelectedDownloadsMutation.isPending}
+                icon={TrashIcon}
+                label={t("downloads.deleteSelected")}
+                onClick={() => deleteSelectedDownloadsMutation.mutate({
+                  downloadedChapters: selectedDownloadedChapterCount ?? 0, novelIds: selectedNovelIds,
+                })}
+              />
+              <SelectionAction
+                aria-label={t("library.removeSelectedFromLibrary")}
+                color="danger"
+                disabled={selectedIds.size === 0 || removeSelectedFromLibraryMutation.isPending}
+                icon={RemoveFromLibraryIcon}
+                label={t("novel.removeFromLibrary")}
+                onClick={() => removeSelectedFromLibraryMutation.mutate({
+                  downloadedCount: selectedDownloadedChapterCount, novelIds: selectedNovelIds,
+                })}
+              />
+            </div>
+          ) : null}
         </div>
       </PageFrame>
 

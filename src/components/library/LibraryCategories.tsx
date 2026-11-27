@@ -1,3 +1,4 @@
+import { UserCategoryName } from "../UserCategoryName";
 import {
   closestCenter,
   DndContext,
@@ -295,18 +296,24 @@ export function CategoryTabs({ activeId, entries, onSelect }: CategoryTabsProps)
   const { t } = useTranslation();
   const stripRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLButtonElement>(null);
+  const pointerSelection = useRef<number | null | undefined>(undefined);
   const activeIndex = entries.findIndex((entry) => entry.id === activeId);
   const mouseDragHandlers = useHorizontalMouseDrag(stripRef);
 
   useEffect(() => {
+    if (pointerSelection.current !== activeId) {
+      revealCategoryTab(stripRef.current, activeRef.current);
+    }
+    pointerSelection.current = undefined;
+  }, [activeId, activeIndex]);
+
+  useEffect(() => {
     const strip = stripRef.current;
-    const revealActive = () => revealCategoryTab(strip, activeRef.current);
-    revealActive();
     if (!strip || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(revealActive);
+    const observer = new ResizeObserver(() => revealCategoryTab(strip, activeRef.current));
     observer.observe(strip);
     return () => observer.disconnect();
-  }, [activeId, activeIndex]);
+  }, []);
 
   useEffect(() => {
     const strip = stripRef.current;
@@ -339,11 +346,23 @@ export function CategoryTabs({ activeId, entries, onSelect }: CategoryTabsProps)
             className="norea-library-category-tab norea-state-layer"
             data-active={active}
             key={entry.id ?? "all"}
-            onClick={() => onSelect(entry.id)}
-            onFocus={(event) => revealCategoryTab(stripRef.current, event.currentTarget)}
+            onMouseDown={(event) => {
+              if (event.button !== 0) return;
+              event.preventDefault();
+              event.currentTarget.focus({ preventScroll: true });
+            }}
+            onClick={(event) => {
+              pointerSelection.current = event.detail > 0 ? entry.id : undefined;
+              onSelect(entry.id);
+            }}
+            onFocus={(event) => {
+              if (event.currentTarget.matches(":focus-visible")) {
+                revealCategoryTab(stripRef.current, event.currentTarget);
+              }
+            }}
             ref={active ? activeRef : undefined}
           >
-            <span className="norea-library-category-tab-label">{entry.label}</span>
+            <span className="norea-library-category-tab-label">{entry.category ? <UserCategoryName name={entry.label} /> : entry.label}</span>
             <span className="norea-library-category-count">
               {entry.count.toLocaleString()}
             </span>
@@ -448,7 +467,7 @@ function SortableCategoryRow({
         className="norea-library-category norea-state-layer"
         onClick={onSelect}
       >
-        <span className="norea-library-category-label">{category.name}</span>
+        <span className="norea-library-category-label"><UserCategoryName name={category.name} /></span>
         <span className="norea-library-category-count">
           {count.toLocaleString()}
         </span>
@@ -578,7 +597,7 @@ export function CategoryList({
               className="norea-library-category norea-state-layer"
               onClick={() => onSelect(entry.id)}
             >
-              <span className="norea-library-category-label">{entry.label}</span>
+              <span className="norea-library-category-label">{entry.category ? <UserCategoryName name={entry.label} /> : entry.label}</span>
               <span className="norea-library-category-count">
                 {entry.count.toLocaleString()}
               </span>

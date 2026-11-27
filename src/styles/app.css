@@ -297,6 +297,7 @@ a {
 
 .norea-rail-nav[data-show-labels="true"] .norea-rail-link {
   gap: var(--norea-space-1);
+  padding-inline: var(--norea-space-1);
 }
 
 .norea-rail-nav[data-show-labels="true"] .norea-rail-label {
@@ -325,6 +326,14 @@ a {
   right: 0.5rem;
   text-align: center;
   top: 0.4375rem;
+}
+
+.norea-rail-badge[data-failed] {
+  align-items: center;
+  background: var(--norea-color-warn-soft);
+  color: var(--norea-color-on-warn-soft);
+  display: inline-flex;
+  gap: 0.125rem;
 }
 
 .norea-app-main {
@@ -636,9 +645,6 @@ html[data-norea-keyboard="open"] .norea-mobile-nav {
 .norea-app-bar .norea-app-bar-tabs {
   align-self: stretch;
   display: flex;
-  flex-wrap: nowrap;
-  min-width: 0;
-  overflow-x: auto;
   scrollbar-width: none;
 }
 
@@ -650,11 +656,9 @@ html[data-norea-keyboard="open"] .norea-mobile-nav {
 .norea-app-bar .norea-app-bar-tabs .mantine-Tabs-tab {
   border-bottom-width: 0.125rem;
   color: var(--norea-color-ink-muted);
-  flex: 0 0 auto;
   font-size: var(--norea-text-md);
   font-weight: var(--norea-weight-regular);
   height: auto;
-  padding-inline: var(--norea-space-3);
 }
 
 .norea-app-bar .norea-app-bar-tabs .mantine-Tabs-tab[data-active] {
@@ -870,6 +874,11 @@ html[data-norea-keyboard="open"] .norea-mobile-nav {
 .norea-icon-button:disabled {
   background: transparent;
   opacity: var(--norea-disabled-opacity);
+}
+
+:is(.norea-history-row-trailing, .norea-task-work-header, .norea-downloads-novel-row) .norea-overflow-trigger,
+.norea-source-list-row ~ .norea-quick-add-button {
+  --norea-icon-glyph-size: 0.8125rem;
 }
 
 .norea-icon-button svg {

@@ -62,7 +62,7 @@ function formatOptionalBuildTime(
     : buildTime;
 }
 
-export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
+export function DeveloperSection({ busyAction, isBusy, onBusyChange }: SettingsBusyProps) {
   const { locale, t } = useTranslation();
   const sharedBrowserEnvironment = isAndroidRuntime();
   const confirm = useConfirm();
@@ -207,7 +207,7 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
             size="lg"
             tone="danger"
             disabled={isBusy}
-            loading={isBusy}
+            loading={busyAction === "maintenance.clearWebViewCache"}
             onClick={() => {
               void handleClearWebViewCache();
             }}

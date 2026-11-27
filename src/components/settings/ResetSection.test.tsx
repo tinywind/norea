@@ -39,7 +39,7 @@ function elements(node: ReactNode): ReactElement<Props>[] {
 }
 
 function resetButton(rowLabel: string, actionLabel: string) {
-  const row = elements(ResetSection({ isBusy: false, onBusyChange: vi.fn() })).find(
+  const row = elements(ResetSection({ busyAction: null, isBusy: false, onBusyChange: vi.fn() })).find(
     (element) => element.props.label === rowLabel,
   )!;
   return elements(row.props.children).find((element) => element.props.label === actionLabel)!;

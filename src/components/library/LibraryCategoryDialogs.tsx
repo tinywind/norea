@@ -1,3 +1,4 @@
+import { UserCategoryName, withCategoryNames } from "../UserCategoryName";
 import { Button, Stack, Text, TextInput } from "@mantine/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -131,7 +132,7 @@ export const LibraryCategoryDialogs = forwardRef<
       rememberFocusReturn();
       const confirmed = await confirm({
         title: t("categories.delete"),
-        message: t("library.deleteCategory.message", { name: category.name }),
+        message: withCategoryNames(t("library.deleteCategory.message", { name: "{categories}" }), <UserCategoryName name={category.name} />),
         confirmLabel: t("common.delete"),
         danger: true,
       });
@@ -215,6 +216,7 @@ export const LibraryCategoryDialogs = forwardRef<
           <TextInput
             autoFocus
             label={t("library.categoryName")}
+            classNames={{ input: "norea-user-category-name" }}
             onChange={(event) => setCategoryName(event.currentTarget.value)}
             value={categoryName}
           />

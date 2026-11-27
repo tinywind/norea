@@ -1,3 +1,4 @@
+import { UserCategoryName, withCategoryNames } from "./UserCategoryName";
 import { useEffect, useRef, useState } from "react";
 import { Button, Group, NumberInput, Paper, ScrollArea, SimpleGrid, Stack, Switch, Text, TextInput } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
@@ -18,7 +19,8 @@ import { useContentSyncStore } from "../store/content-sync";
 import { USER_STATE_IDLE_RUNTIME, useUserStateStore, type UserStateLocalRetentionConfig } from "../store/user-state";
 import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
-import { ConnectIcon, SyncIcon, UploadIcon } from "./ui/icons";
+import { ChevronRightIcon, ConnectIcon, SyncIcon, UploadIcon } from "./ui/icons";
+import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 
 const DEFAULT_RETENTION_CONFIG: UserStateLocalRetentionConfig = {
   pruneNonLibraryEnabled: false,
@@ -140,12 +142,16 @@ function ConflictValue({ label, entity, value, deviceName }: {
   label: string; entity: UserStateEntity; value: UserStateValue | null; deviceName?: string;
 }) {
   const { t, locale } = useTranslation();
+  const category = entity.kind === "category" ? value as UserStateValueMap["category"] | null : null;
   return (
     <Paper withBorder p="sm">
       <Stack gap="xs">
         <Text fw="var(--norea-weight-bold)" size="sm">{label}</Text>
         {deviceName ? <Text size="xs" c="dimmed">{deviceName}</Text> : null}
-        <Text size="sm">{userStateValueSummary(entity.kind, value, t, locale)}</Text>
+        <Text size="sm">{category
+          ? withCategoryNames(userStateValueSummary(entity.kind, { ...category, name: "{categories}" }, t, locale),
+              <UserCategoryName name={category.name} />)
+          : userStateValueSummary(entity.kind, value, t, locale)}</Text>
         {entity.kind === "composition" && value ? <CompositionDetails value={value as UserStateValueMap["composition"]} /> : null}
       </Stack>
     </Paper>
@@ -178,14 +184,14 @@ function UserStateConflictCard({ conflict, busy, onResolve }: {
   return (
     <Paper withBorder p="md">
       <Stack gap="sm">
-        <Text fw="var(--norea-weight-bold)">{[userStateEntityLabel(conflict.entity, t), conflict.categoryName].filter(Boolean).join(" · ")}</Text>
+        <Text fw="var(--norea-weight-bold)">{userStateEntityLabel(conflict.entity, t)}{conflict.categoryName ? <> · <UserCategoryName name={conflict.categoryName} /></> : null}</Text>
         <Text size="sm">{reasonLabel(conflict.reason, false, t)}</Text>
         <SimpleGrid cols={{ base: 1, sm: 2 }}>
           <ConflictValue label={t("userState.local")} entity={conflict.entity} value={conflict.local} />
           <ConflictValue label={t("userState.shared")} entity={conflict.shared?.entity ?? conflict.entity}
             value={conflict.shared?.value ?? null} deviceName={conflict.shared?.deviceName} />
         </SimpleGrid>
-        {nameRequired ? <TextInput label={t("userState.categoryName")} value={categoryName} disabled={busy}
+        {nameRequired ? <TextInput classNames={{ input: "norea-user-category-name" }} label={t("userState.categoryName")} value={categoryName} disabled={busy}
           description={nameCollision ? t("userState.categoryNameHint") : undefined} maxLength={200}
           onChange={event => setCategoryName(event.currentTarget.value)} /> : null}
         {restoringCategory && conflict.entity.kind === "membership" ? (
@@ -222,6 +228,7 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
     meta: { errorPresentation: "inline" },
   });
   const [busy, setBusy] = useState(false);
+  const [showStatus, setShowStatus] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const action = useRef(false);
   const working = busy || runtime.phase === "syncing";
@@ -295,91 +302,106 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
       ? formatUserStateErrorSummary(runtime.backgroundError, runtime.backgroundBlocked === true, t)
       : null;
   const error = actionError || runtimeError || (status.error ? describeError(status.error) : null);
+  const lastSuccess = data?.lastSuccessAt ? t("userState.lastSuccess", {
+    time: formatDateTimeForLocale(locale, data.lastSuccessAt),
+  }) : null;
+  const recoveryStatus = pausedAfterRestore ? t("userState.restorePaused") : epochMismatch ? t("userState.epochMismatchTitle") : null;
+  const syncStatus = recoveryStatus ?? (working ? t("userState.syncing") : lastSuccess ?? t("userState.never"));
+  const compactSyncStatus = error ? t("tasks.status.failed")
+    : recoveryStatus ?? (working ? t("contentSync.status.syncing") : lastSuccess ?? t("contentSync.status.never"));
+  const counts = data ? t("userState.counts", { pending: data.pending, conflicts: data.conflicts.length }) : null;
+  const projectionCounts = data ? t("userState.projectionCounts", {
+    pending: data.projectionPending ?? 0, failed: data.projectionFailed ?? 0,
+  }) : null;
+  const statusSummary = recoveryStatus ?? (status.error ? t("tasks.status.failed")
+    : data?.projectionFailed && !data.conflicts.length ? projectionCounts : counts) ?? t("common.loading");
   return (
     <SettingsSection title={t("userState.title")} description={t("userState.description")}>
       <SettingsFieldRow label={t("userState.workspace")} description={t("userState.workspaceScope")}
+        compactStatus={t(data?.workspaceId && serverUrl ? "contentSync.status.connected" : "contentSync.status.disconnected")}
         status={!serverUrl ? t("userState.serverRequired") : data?.workspaceId ? t("userState.connected") : t("userState.notConnected")}>
         <Text size="sm" style={{ overflowWrap: "anywhere" }}>{serverUrl}</Text>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("userState.thisDevice")}>
         <Text size="sm">{deviceName || defaultName.data || t("common.loading")}</Text>
       </SettingsFieldRow>
-      {pausedAfterRestore ? (
-        <Paper withBorder p="md" role="status">
-          <Stack gap="sm">
-            <Text fw="var(--norea-weight-bold)">{t("userState.restorePaused")}</Text>
-            <Text size="sm">{t("userState.restorePausedDescription")}</Text>
-            <Text size="sm">{t("userState.restoreMergeDescription")}</Text>
-            <Text size="sm">{t("userState.restoreOverwriteDescription")}</Text>
-            <Text size="sm">{t("userState.restoreSnapshotDescription")}</Text>
-            <Button styles={multilineButtonStyles} leftSection={<ConnectIcon />} variant="default" loading={working} disabled={!serverUrl || working}
-              onClick={() => { void run(resumeUserStateAfterRestore); }}>
-              {t("userState.reconnectAfterRestore")}
-            </Button>
-          </Stack>
-        </Paper>
-      ) : null}
-      {epochMismatch ? (
-        <Paper withBorder p="md" role="status">
-          <Stack gap="sm">
-            <Text fw="var(--norea-weight-bold)">{t("userState.epochMismatchTitle")}</Text>
-            <Text size="sm">{t("userState.epochMismatchDescription")}</Text>
-            <Text size="sm">{t("userState.epochMismatchReseedDescription")}</Text>
-            <Text size="sm">{t("userState.epochMismatchFreshDescription")}</Text>
-            <Group gap="sm">
-              <Button styles={multilineButtonStyles} leftSection={<UploadIcon />} variant="default" loading={working}
-                disabled={!serverUrl || working || pausedAfterRestore}
-                onClick={() => { void run(() => rebindUserStateWorkspace("reseed")); }}>
-                {t("userState.epochMismatchReseed")}
-              </Button>
-              <Button styles={multilineButtonStyles} leftSection={<ConnectIcon />} variant="default" loading={working}
-                disabled={!serverUrl || working || pausedAfterRestore}
-                onClick={() => { void run(() => rebindUserStateWorkspace("start_fresh")); }}>
-                {t("userState.epochMismatchFresh")}
-              </Button>
-            </Group>
-          </Stack>
-        </Paper>
-      ) : null}
       <SettingsFieldRow label={t("userState.automatic")} description={t("userState.automaticDescription")}>
         <Switch checked={enabled} disabled={!serverUrl || pausedAfterRestore} aria-label={t("userState.automatic")}
           onChange={event => setEnabled(serverUrl, event.currentTarget.checked)} />
       </SettingsFieldRow>
-      <SettingsFieldRow label={t("userState.syncNow")} description={t(pausedAfterRestore ? "userState.restorePaused" : "userState.offDescription")} error={error}
-        status={pausedAfterRestore ? t("userState.restorePaused") : working ? t("userState.syncing") : data?.lastSuccessAt ? t("userState.lastSuccess", {
-          time: formatDateTimeForLocale(locale, data.lastSuccessAt),
-        }) : t("userState.never")}>
+      <SettingsFieldRow label={t("userState.syncNow")} description={t(pausedAfterRestore ? "userState.restorePausedDescription" : "userState.offDescription")}
+        compactStatus={compactSyncStatus} error={error} status={syncStatus}>
         <SettingsInlineControls>
           <IconButton label={t("userState.syncNow")} size="lg" loading={working} disabled={!serverUrl || working || pausedAfterRestore || Boolean(epochMismatch)}
             onClick={() => { void run(synchronizeUserState); }}><SyncIcon /></IconButton>
         </SettingsInlineControls>
       </SettingsFieldRow>
-      {data ? (
-        <SettingsFieldRow label={t("userState.status")} layout="stacked">
-          <Stack gap="sm">
-            <Text size="sm" role="status">{t("userState.counts", {
-              pending: data.pending, conflicts: data.conflicts.length,
-            })}</Text>
-            <Text size="sm" c={data.projectionFailed ? "danger" : "dimmed"}>
-              {t("userState.projectionCounts", {
-                pending: data.projectionPending ?? 0, failed: data.projectionFailed ?? 0,
-              })}
-            </Text>
-            {data.seedCutoffAt != null ? (
-              <Text size="sm" c="dimmed">
-                {t("userState.retentionCutoffStatus", {
-                  date: formatDateTimeForLocale(locale, data.seedCutoffAt),
-                })}
+      <SettingsFieldRow label={t("userState.status")} compactStatus={statusSummary}>
+        <IconButton label={t("settings.row.moreInfo", { label: t("userState.status") })} size="lg" disabled={!data && !error}
+          aria-haspopup="dialog" aria-expanded={showStatus} onClick={() => setShowStatus(true)}><ChevronRightIcon /></IconButton>
+      </SettingsFieldRow>
+      <ResponsiveSheet title={t("userState.status")} opened={showStatus} onClose={() => setShowStatus(false)}>
+        <Stack gap="sm">
+          {pausedAfterRestore ? (
+            <Paper withBorder p="md" role="status">
+              <Stack gap="sm">
+                <Text fw="var(--norea-weight-bold)">{t("userState.restorePaused")}</Text>
+                <Text size="sm">{t("userState.restorePausedDescription")}</Text>
+                <Text size="sm">{t("userState.restoreMergeDescription")}</Text>
+                <Text size="sm">{t("userState.restoreOverwriteDescription")}</Text>
+                <Text size="sm">{t("userState.restoreSnapshotDescription")}</Text>
+                <Button styles={multilineButtonStyles} leftSection={<ConnectIcon />} variant="default" loading={working} disabled={!serverUrl || working}
+                  onClick={() => { void run(resumeUserStateAfterRestore); }}>
+                  {t("userState.reconnectAfterRestore")}
+                </Button>
+              </Stack>
+            </Paper>
+          ) : null}
+          {epochMismatch ? (
+            <Paper withBorder p="md" role="status">
+              <Stack gap="sm">
+                <Text fw="var(--norea-weight-bold)">{t("userState.epochMismatchTitle")}</Text>
+                <Text size="sm">{t("userState.epochMismatchDescription")}</Text>
+                <Text size="sm">{t("userState.epochMismatchReseedDescription")}</Text>
+                <Text size="sm">{t("userState.epochMismatchFreshDescription")}</Text>
+                <Group gap="sm">
+                  <Button styles={multilineButtonStyles} leftSection={<UploadIcon />} variant="default" loading={working}
+                    disabled={!serverUrl || working || pausedAfterRestore}
+                    onClick={() => { void run(() => rebindUserStateWorkspace("reseed")); }}>
+                    {t("userState.epochMismatchReseed")}
+                  </Button>
+                  <Button styles={multilineButtonStyles} leftSection={<ConnectIcon />} variant="default" loading={working}
+                    disabled={!serverUrl || working || pausedAfterRestore}
+                    onClick={() => { void run(() => rebindUserStateWorkspace("start_fresh")); }}>
+                    {t("userState.epochMismatchFresh")}
+                  </Button>
+                </Group>
+              </Stack>
+            </Paper>
+          ) : null}
+          {error ? <Text size="sm" c="danger" role="alert" style={{ overflowWrap: "anywhere" }}>{error}</Text> : null}
+          {data ? (
+            <>
+              <Text size="sm" role="status">{counts}</Text>
+              <Text size="sm" c={data.projectionFailed ? "danger" : "dimmed"}>
+                {projectionCounts}
               </Text>
-            ) : null}
-            {data.conflicts.length ? <Text size="sm">{t("userState.conflictsDescription")}</Text> : null}
-            {data.conflicts.map(conflict => (
-              <UserStateConflictCard key={conflict.id + ":" + conflict.version} conflict={conflict} busy={working || pausedAfterRestore}
-                onResolve={input => { void run(() => resolveUserStateConflict(input)); }} />
-            ))}
-          </Stack>
-        </SettingsFieldRow>
-      ) : null}
+              {data.seedCutoffAt != null ? (
+                <Text size="sm" c="dimmed">
+                  {t("userState.retentionCutoffStatus", {
+                    date: formatDateTimeForLocale(locale, data.seedCutoffAt),
+                  })}
+                </Text>
+              ) : null}
+              {data.conflicts.length ? <Text size="sm">{t("userState.conflictsDescription")}</Text> : null}
+              {data.conflicts.map(conflict => (
+                <UserStateConflictCard key={conflict.id + ":" + conflict.version} conflict={conflict} busy={working || pausedAfterRestore}
+                  onResolve={input => { void run(() => resolveUserStateConflict(input)); }} />
+              ))}
+            </>
+          ) : null}
+        </Stack>
+      </ResponsiveSheet>
       <SettingsAdvancedGroup>
         <SettingsFieldRow label={t("userState.retentionPruneNonLibrary")} description={t("userState.retentionPruneNonLibraryDescription")}>
           <Switch checked={retentionConfig.pruneNonLibraryEnabled} disabled={!serverUrl || pausedAfterRestore}

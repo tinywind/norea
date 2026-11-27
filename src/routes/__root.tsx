@@ -27,6 +27,7 @@ import {
   LibraryIcon,
   MoreIcon,
   UpdatesIcon,
+  WarningIcon,
   type AppIcon,
 } from "../components/ui/icons";
 import { useTranslation, type TranslationKey } from "../i18n";
@@ -34,7 +35,7 @@ import { startAndroidBackNavigationBridge } from "../lib/android-back-navigation
 import { startAndroidFileOpenListener } from "../lib/android-file-open";
 import { startDesktopFileOpenListener } from "../lib/desktop-file-open";
 import { startDeepLinkListener } from "../lib/deep-link";
-import { useTaskAttentionCount } from "../lib/tasks/hooks";
+import { useTaskBadgeCounts } from "../lib/tasks/hooks";
 import { useNewChapterBadgeCount } from "../components/updates/use-new-chapter-badge";
 import {
   applyTaskNotificationAction,
@@ -235,6 +236,7 @@ function AppNavLink({
   active,
   activeClassName,
   badgeCount = 0,
+  failedBadge = false,
   className,
   item,
   label,
@@ -242,14 +244,16 @@ function AppNavLink({
   active: boolean;
   activeClassName: string;
   badgeCount?: number;
+  failedBadge?: boolean;
   className: string;
   item: NavItem;
   label: string;
 }) {
   const { t } = useTranslation();
+  const badgeMessage = item.to === "/updates" ? "nav.newChapters" : failedBadge ? "nav.failedTasks" : "nav.activeTasks";
   const accessibleLabel = badgeCount <= 0
     ? label
-    : t(item.to === "/updates" ? "nav.newChapters" : "nav.taskAttention", { label, count: badgeCount });
+    : t(badgeMessage, { label, count: badgeCount });
 
   return (
     <Anchor
@@ -266,7 +270,8 @@ function AppNavLink({
       </span>
       <span className="norea-rail-label">{label}</span>
       {badgeCount > 0 ? (
-        <span aria-hidden="true" className="norea-rail-badge">
+        <span aria-hidden="true" className="norea-rail-badge" data-failed={failedBadge || undefined}>
+          {failedBadge ? <WarningIcon size="0.75rem" /> : null}
           {formatNavBadge(badgeCount)}
         </span>
       ) : null}
@@ -288,15 +293,16 @@ function NavLinks({
   pathname: string;
 }) {
   const { t } = useTranslation();
-  const taskAttentionCount = useTaskAttentionCount();
+  const tasks = useTaskBadgeCounts();
   const newChapterCount = useNewChapterBadgeCount();
 
   return NAV_ITEMS.map((item) => (
     <AppNavLink
       active={isNavItemActive(item, pathname, openedFromMore)}
       activeClassName={activeClassName}
-      badgeCount={item.to === "/more" ? taskAttentionCount : item.to === "/updates" ? newChapterCount : 0}
+      badgeCount={item.to === "/more" ? tasks.failed || tasks.active : item.to === "/updates" ? newChapterCount : 0}
       className={className}
+      failedBadge={item.to === "/more" && tasks.failed > 0}
       item={item}
       key={item.to}
       label={t(item[labelKey])}
@@ -535,7 +541,7 @@ export function RootLayout() {
     <AppShell
       navbar={{
         width: showLabelsInNav
-          ? { sm: "3.5rem", "1200px": "11.5rem" }
+          ? { sm: "calc(3.75rem + var(--norea-safe-area-left))", "1200px": "11.5rem" }
           : "3.5rem",
         breakpoint: "sm",
         collapsed: { mobile: true, desktop: readerActive || setupActive },

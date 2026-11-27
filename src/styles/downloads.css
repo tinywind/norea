@@ -9,21 +9,27 @@
   min-width: 0;
 }
 
-/* The one pill left in the header: a warning the user can act on, such as jumping to Needs attention. */
 .norea-downloads-warning {
   align-items: center;
-  background: var(--norea-color-warn-soft);
-  border: 1px solid var(--norea-color-warn);
-  border-radius: var(--norea-radius-full);
-  color: var(--norea-color-on-warn-soft);
+  background: transparent;
+  border: 0;
+  color: inherit;
   cursor: pointer;
   display: inline-flex;
-  flex: 0 0 auto;
   font: inherit;
   font-size: var(--norea-text-sm);
   font-variant-numeric: tabular-nums;
   font-weight: var(--norea-weight-medium);
   gap: var(--norea-space-1);
+}
+
+/* Storage's missing-image filter retains its selected state in the header. */
+.norea-downloads-subrow .norea-downloads-warning {
+  background: var(--norea-color-warn-soft);
+  border: 1px solid var(--norea-color-warn);
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-on-warn-soft);
+  flex: 0 0 auto;
   height: 1.75rem;
   padding-inline: var(--norea-space-3);
   white-space: nowrap;
@@ -55,7 +61,15 @@
 }
 
 .norea-downloads-body {
+  container-type: inline-size;
   min-width: 0;
+}
+
+.norea-downloads-compact-title,
+.norea-downloads-column-headings,
+.norea-downloads-count-column,
+.norea-downloads-size-column {
+  display: none;
 }
 
 .norea-downloads-icon-button svg {
@@ -263,7 +277,7 @@
   padding: var(--norea-space-3) var(--norea-space-3) var(--norea-space-3) 5rem;
 }
 
-/* The header's sub-row: one muted count line, then a warning pill that scrolls in place on phones. */
+/* The storage total and missing-image filter scroll together in a narrow header. */
 .norea-downloads-subrow {
   align-items: center;
   display: flex;
@@ -282,7 +296,143 @@
   font-size: var(--norea-text-sm);
 }
 
+@media (min-width: 768px) {
+  .norea-downloads-page .norea-list-item.norea-downloads-auto-cleanup {
+    background: transparent;
+    border-block: 1px solid var(--norea-color-rule);
+    border-inline: 0;
+    border-radius: 0;
+  }
+
+  @container (min-width: 36rem) {
+    .norea-downloads-list {
+      --norea-storage-count-width: clamp(7rem, 15%, 11rem);
+      --norea-storage-size-width: clamp(4rem, 9%, 7rem);
+      --norea-storage-actions-width: calc(3 * var(--norea-control-md));
+      --norea-storage-columns: 2.25rem minmax(0, 1fr) var(--norea-storage-count-width) var(--norea-storage-size-width) var(--norea-storage-actions-width);
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+    }
+
+    .norea-downloads-list[data-selecting] {
+      --norea-storage-columns: auto 2.25rem minmax(0, 1fr) var(--norea-storage-count-width) var(--norea-storage-size-width);
+    }
+
+    .norea-downloads-column-headings,
+    .norea-downloads-novel-row,
+    .norea-downloads-novel-row[data-selecting] {
+      align-items: center;
+      column-gap: var(--norea-space-3);
+      grid-template-columns: var(--norea-storage-columns);
+      padding-inline: var(--norea-space-1);
+    }
+
+    .norea-downloads-column-headings {
+      color: var(--norea-color-ink-muted);
+      display: grid;
+      font-size: var(--norea-text-sm);
+      padding-block: var(--norea-space-2);
+      text-align: end;
+    }
+
+    .norea-downloads-column-headings > :first-child {
+      grid-column: span 2;
+      text-align: start;
+    }
+
+    .norea-downloads-list[data-selecting] .norea-downloads-column-headings > :first-child {
+      grid-column: span 3;
+    }
+
+    .norea-downloads-novel:not([data-selected]) {
+      background: transparent;
+    }
+
+    .norea-downloads-column-headings + .norea-downloads-novel {
+      border-top: 1px solid var(--norea-color-rule);
+    }
+
+    .norea-downloads-novel-row {
+      min-height: 4.5rem;
+      padding-block: var(--norea-space-2);
+    }
+
+    .norea-downloads-novel-row .norea-console-cover {
+      height: 3.375rem !important;
+      width: 2.25rem !important;
+    }
+
+    .norea-downloads-novel-main {
+      gap: 0;
+      min-width: 0;
+    }
+
+    .norea-downloads-novel-open {
+      white-space: normal;
+    }
+
+    .norea-downloads-novel-count,
+    .norea-downloads-inline-read-count {
+      display: none;
+    }
+
+    .norea-downloads-count-column,
+    .norea-downloads-size-column {
+      display: grid;
+      font-size: var(--norea-text-md);
+      font-variant-numeric: tabular-nums;
+      gap: var(--norea-space-1);
+      text-align: end;
+    }
+
+    .norea-downloads-count-column small {
+      color: var(--norea-color-ink-muted);
+      font-size: var(--norea-text-xs);
+    }
+
+    .norea-downloads-row-actions {
+      align-self: center;
+      gap: 0;
+    }
+
+    .norea-downloads-row-actions .norea-icon-button {
+      --norea-icon-button-size: var(--norea-control-md);
+    }
+  }
+}
+
 @media (max-width: 767px) {
+  .norea-app-bar-row:has(.norea-downloads-view-tabs) {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+
+  .norea-app-bar-slot:has(.norea-downloads-view-tabs) {
+    display: contents;
+  }
+
+  .norea-downloads-compact-title {
+    display: block;
+    flex: 1 1 0;
+    font-size: var(--norea-text-lg);
+    font-weight: var(--norea-weight-bold);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .norea-app-bar-row:has(.norea-downloads-view-tabs) .norea-icon-button {
+    --norea-icon-button-size: var(--norea-control-md);
+  }
+
+  .norea-app-bar .norea-downloads-view-tabs {
+    flex: 1 0 100%;
+    min-height: var(--norea-control-md);
+    order: 1;
+  }
+
   .norea-downloads-description {
     display: none;
   }

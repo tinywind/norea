@@ -130,25 +130,28 @@ const byType = (elements: ReactElement<Record<string, unknown>>[], type: unknown
 const labelled = (elements: ReactElement<Record<string, unknown>>[], label: string) =>
   elements.find((element) => element.props.label === label || element.props["aria-label"] === label);
 
+const menuItems = (elements: ReactElement<Record<string, unknown>>[]) =>
+  elements.find(element => Array.isArray(element.props.items))!.props.items as { label: string; onClick: () => void }[];
+
 describe("SourcePage", () => {
-  it("opens source reader settings directly when no plugin settings need an overflow", async () => {
+  it("opens reader settings from the source menu without plugin options", async () => {
     const elements = await mountPage();
     const header = elements.find((element) => element.type === PageHeader)!;
     expect(header.props.title).toBe("Demo Source");
     expect(header.props.onBack).toEqual(expect.any(Function));
-    expect(labelled(elements, "common.openSite")).toBeDefined();
-    await harness!.run(() => (labelled(elements, "source.readerSettings")!.props.onClick as () => void)());
+    expect(menuItems(elements).some(item => item.label === "common.openSite")).toBe(true);
+    await harness!.run(() => menuItems(elements).find(item => item.label === "source.readerSettings")!.onClick());
     const panel = collectElements(tree).find((element) => element.props.target !== undefined);
     expect(panel!.props.target).toEqual({ kind: "source", sourceId: "demo", label: "Demo Source" });
   });
 
-  it("keeps both source settings choices reachable while exposing Open site directly", async () => {
+  it("keeps display in the header and both source settings choices in the menu", async () => {
     mocks.plugins = [{ ...plugin(), pluginSettings: { token: { type: "Text", label: "Token", value: "" } } } as unknown as Plugin];
     const elements = await mountPage();
-    expect(labelled(elements, "common.openSite")).toBeDefined();
-    const menu = elements.find((element) => Array.isArray(element.props.items))!;
-    const items = menu.props.items as { label: string; onClick: () => void }[];
-    expect(items.map((item) => item.label)).toEqual(["source.sourceSettings", "source.readerSettings"]);
+    expect(menuItems(elements).some(item => item.label === "common.openSite")).toBe(true);
+    const items = menuItems(elements);
+    expect(labelled(elements, "library.viewOptions.display")).toBeDefined();
+    expect(items.map((item) => item.label)).toEqual(["common.openSite", "source.sourceSettings", "source.readerSettings"]);
     await harness!.run(() => items.find((item) => item.label === "source.sourceSettings")!.onClick());
     const settings = collectElements(tree).find((element) => "plugin" in element.props && "onClose" in element.props);
     expect((settings!.props.plugin as Plugin).id).toBe("demo");

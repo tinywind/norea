@@ -1,3 +1,4 @@
+import { formatUserCategoryName } from "./UserCategoryName";
 import { Skeleton, VisuallyHidden } from "@mantine/core";
 import { memo, type CSSProperties, type MouseEvent } from "react";
 import type { LibraryNovel } from "../db/queries/novel";
@@ -7,7 +8,8 @@ import { useLongPress } from "../lib/use-long-press";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import type { LibraryDisplayMode } from "../store/library";
 import { ConsoleCover } from "./ConsolePrimitives";
-import { CheckIcon, DownloadedIcon, DownloadIcon, UnreadIcon, WarningIcon } from "./ui/icons";
+import { ChapterCountBadges, CoverReadingProgress, DownloadedBadge, readingPercent, UnreadBadge } from "./ChapterCountBadges";
+import { CheckIcon } from "./ui/icons";
 import { ListRow } from "./ui/ListRow";
 
 const LONG_PRESS_MS = 500;
@@ -211,24 +213,15 @@ function useLibraryItemPress(
   };
 }
 
-const LibraryCard = memo(function LibraryCard({
-  displayMode,
-  index,
-  novel,
-  offlineState,
-  onActivate,
-  onLongPress,
-  selected,
-  selectedCategoryId,
-  selectionMode,
-  showDownloadBadges,
-  showNumberBadges,
-  showUnreadBadges,
-}: LibraryItemProps & { displayMode: LibraryDisplayMode }) {
+const LibraryCard = memo(function LibraryCard({ displayMode, ...item }: LibraryItemProps & { displayMode: LibraryDisplayMode }) {
+  const {
+    index, novel, offlineState, onActivate, onLongPress, selected, selectedCategoryId,
+    selectionMode, showDownloadBadges, showNumberBadges, showUnreadBadges,
+  } = item;
   const { t } = useTranslation();
   const press = useLibraryItemPress(novel.id, onActivate, onLongPress);
   const coverSource = useNovelCoverSource(novel, { allowSourceFallback: true });
-  const progress = getReadingPercent(novel);
+  const progress = readingPercent(novel.readingProgress);
   const coverOnly = displayMode === "cover-only";
   const author = getCreatorLabel(novel, t);
   const categoryText = formatVisibleCategories(novel, selectedCategoryId);
@@ -245,34 +238,16 @@ const LibraryCard = memo(function LibraryCard({
         <span aria-hidden={coverOnly ? undefined : true}>
           <ConsoleCover alt={novel.name} height="auto" src={coverSource} width="100%" />
         </span>
-        <LibraryBadges
-          index={index}
-          novel={novel}
-          offlineState={offlineState}
-          showDownloadBadges={showDownloadBadges}
-          showNumberBadges={showNumberBadges}
-          showUnreadBadges={showUnreadBadges}
-        />
-        {progress > 0 ? (
-          <span
-            aria-hidden="true"
-            className="norea-library-card-progress"
-            style={{ "--norea-library-progress": `${progress}%` } as CSSProperties}
-          />
+        {coverOnly ? (
+          <LibraryBadges {...item} />
+        ) : showUnreadBadges && novel.chaptersUnread > 0 ? (
+          <UnreadBadge count={novel.chaptersUnread} />
         ) : null}
+        <CoverReadingProgress decorative progress={progress} />
         {selectionMode ? <SelectionCheck selected={selected} /> : null}
         {displayMode === "compact" ? (
           <span className="norea-library-card-overlay">
             <span className="norea-library-card-title">{novel.name}</span>
-            {categoryText ? (
-              <span
-                aria-label={`${t("categories.title")}: ${categoryText}`}
-                className="norea-library-card-categories"
-                title={categoryText}
-              >
-                {categoryText}
-              </span>
-            ) : null}
           </span>
         ) : null}
       </span>
@@ -280,10 +255,16 @@ const LibraryCard = memo(function LibraryCard({
         <span className="norea-library-card-text">
           <span className="norea-library-card-title">{novel.name}</span>
           <span className="norea-library-card-author">{author}</span>
+        </span>
+      ) : null}
+      {!coverOnly ? (
+        <span className="norea-library-card-meta">
+          {showNumberBadges ? <NumberBadge index={index} /> : null}
+          {showDownloadBadges ? <DownloadedBadge count={novel.chaptersDownloaded} state={offlineState} /> : null}
           {categoryText ? (
             <span
               aria-label={`${t("categories.title")}: ${categoryText}`}
-              className="norea-library-card-categories"
+              className="norea-library-card-categories norea-user-category-name"
               title={categoryText}
             >
               {categoryText}
@@ -298,23 +279,12 @@ const LibraryCard = memo(function LibraryCard({
   );
 });
 
-const LibraryListRow = memo(function LibraryListRow({
-  index,
-  novel,
-  offlineState,
-  onActivate,
-  onLongPress,
-  selected,
-  selectedCategoryId,
-  selectionMode,
-  showDownloadBadges,
-  showNumberBadges,
-  showUnreadBadges,
-}: LibraryItemProps) {
+const LibraryListRow = memo(function LibraryListRow(item: LibraryItemProps) {
+  const { novel, onActivate, onLongPress, selected, selectedCategoryId, selectionMode } = item;
   const { t } = useTranslation();
   const press = useLibraryItemPress(novel.id, onActivate, onLongPress);
   const coverSource = useNovelCoverSource(novel, { allowSourceFallback: true });
-  const progress = getReadingPercent(novel);
+  const progress = readingPercent(novel.readingProgress);
   const categoryText = formatVisibleCategories(novel, selectedCategoryId);
 
   return (
@@ -334,7 +304,7 @@ const LibraryListRow = memo(function LibraryListRow({
           {categoryText ? (
             <span
               aria-label={`${t("categories.title")}: ${categoryText}`}
-              className="norea-library-row-categories"
+              className="norea-library-row-categories norea-user-category-name"
               title={categoryText}
             >
               {categoryText}
@@ -349,81 +319,29 @@ const LibraryListRow = memo(function LibraryListRow({
         </>
       }
       title={novel.name}
-      trailing={
-        <LibraryBadges
-          index={index}
-          novel={novel}
-          offlineState={offlineState}
-          showDownloadBadges={showDownloadBadges}
-          showNumberBadges={showNumberBadges}
-          showUnreadBadges={showUnreadBadges}
-        />
-      }
+      trailing={<LibraryBadges {...item} />}
       {...press}
     />
   );
 });
 
-const OFFLINE_STATE_LABELS: Record<DownloadGoalOfflineState, TranslationKey> = {
-  ready: "library.grid.offline.ready",
-  downloading: "library.grid.offline.downloading",
-  attention: "library.grid.offline.attention",
-};
-
-const OFFLINE_STATE_ICONS = { ready: DownloadedIcon, downloading: DownloadIcon, attention: WarningIcon };
-
-function LibraryBadges({
-  index,
-  novel,
-  offlineState,
-  showDownloadBadges,
-  showNumberBadges,
-  showUnreadBadges,
-}: Omit<
-  LibraryItemProps,
-  "onActivate" | "onLongPress" | "selected" | "selectedCategoryId" | "selectionMode"
->) {
-  const { t } = useTranslation();
-  const unread = showUnreadBadges && novel.chaptersUnread > 0;
-  const goalState = showDownloadBadges ? offlineState : undefined;
-  const downloaded = showDownloadBadges && (novel.chaptersDownloaded > 0 || goalState !== undefined);
-  if (!unread && !downloaded && !showNumberBadges) return null;
-  const downloadedCount = t("library.grid.downloadedBadge", { count: novel.chaptersDownloaded });
-  const downloadedLabel = goalState ? `${downloadedCount} · ${t(OFFLINE_STATE_LABELS[goalState])}` : downloadedCount;
-  const DownloadedStateIcon = OFFLINE_STATE_ICONS[goalState ?? "ready"];
-  const unreadLabel = t("library.grid.unreadBadge", { count: novel.chaptersUnread });
-
+function LibraryBadges({ index, novel, offlineState, showDownloadBadges, showNumberBadges, showUnreadBadges }: LibraryItemProps) {
   return (
     <span className="norea-library-badges">
-      {showNumberBadges ? (
-        <span aria-hidden="true" className="norea-library-badge" data-kind="number">
-          {index + 1}
-        </span>
-      ) : null}
-      {downloaded || unread ? (
-        <span className="norea-library-badge-group">
-          {downloaded ? (
-            <span className="norea-library-badge" data-goal-state={goalState} data-kind="downloaded" title={downloadedLabel}>
-              <DownloadedStateIcon size="0.875rem" />
-              <span aria-hidden="true">{novel.chaptersDownloaded}</span>
-              <VisuallyHidden>{downloadedLabel}</VisuallyHidden>
-            </span>
-          ) : null}
-          {unread ? (
-            <span className="norea-library-badge" data-kind="unread" title={unreadLabel}>
-              <UnreadIcon size="0.875rem" />
-              <span aria-hidden="true">{novel.chaptersUnread}</span>
-              <VisuallyHidden>{unreadLabel}</VisuallyHidden>
-            </span>
-          ) : null}
-        </span>
-      ) : null}
+      {showNumberBadges ? <NumberBadge index={index} /> : null}
+      <ChapterCountBadges
+        downloaded={novel.chaptersDownloaded}
+        unread={novel.chaptersUnread}
+        offlineState={offlineState}
+        showDownloaded={showDownloadBadges}
+        showUnread={showUnreadBadges}
+      />
     </span>
   );
 }
 
-function getReadingPercent(novel: LibraryNovel) {
-  return Math.max(0, Math.min(100, Math.round(novel.readingProgress)));
+function NumberBadge({ index }: { index: number }) {
+  return <span aria-hidden="true" className="norea-library-badge" data-kind="number">{index + 1}</span>;
 }
 
 function formatVisibleCategories(
@@ -434,7 +352,7 @@ function formatVisibleCategories(
   if (!categories || categories.length === 0) return "";
   return categories
     .filter((category) => selectedCategoryId === null || category.id !== selectedCategoryId)
-    .map((category) => category.name)
+    .map((category) => formatUserCategoryName(category.name))
     .join(", ");
 }
 

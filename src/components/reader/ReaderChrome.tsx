@@ -19,7 +19,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CloseIcon,
-  MarkUnreadIcon as IncognitoIcon,
+  HistoryPausedIcon,
   ReaderSettingsIcon,
   RepairIcon,
 } from "../ui/icons";
@@ -56,7 +56,6 @@ export function ReaderTopBar({
   incognitoMode,
   novelName,
   onBack,
-  onIncognitoModeChange,
   onOpenSettings,
   onRepairMedia,
   onToggleBookmark,
@@ -74,7 +73,6 @@ export function ReaderTopBar({
   incognitoMode: boolean;
   novelName?: string;
   onBack: () => void;
-  onIncognitoModeChange: (incognitoMode: boolean) => void;
   onOpenSettings: () => void;
   onRepairMedia: () => void;
   onToggleBookmark: () => void;
@@ -106,6 +104,16 @@ export function ReaderTopBar({
           </div>
         ) : null}
       </div>
+      {incognitoMode ? (
+        <span
+          aria-label={t("reader.historyPaused")}
+          className="norea-reader-history-status"
+          role="img"
+          title={t("reader.historyPaused")}
+        >
+          <HistoryPausedIcon aria-hidden="true" />
+        </span>
+      ) : null}
       {showMediaRepair ? (
         <IconButton
           className="norea-reader-icon-button norea-state-layer"
@@ -140,17 +148,6 @@ export function ReaderTopBar({
         size="sm"
       >
         <ReaderSettingsIcon />
-      </IconButton>
-      <IconButton
-        active={incognitoMode}
-        aria-pressed={incognitoMode}
-        className="norea-reader-icon-button norea-state-layer"
-        label={t("more.pauseHistory")}
-        onClick={() => onIncognitoModeChange(!incognitoMode)}
-        size="sm"
-        title={t("more.pauseHistory.description")}
-      >
-        <IncognitoIcon />
       </IconButton>
     </header>
   );
@@ -209,10 +206,8 @@ export function ReaderBottomBar({
   chapterListExpanded,
   onNextChapter,
   onOpenChapters,
-  onOpenSettings,
   onPreviousChapter,
   seekSlotRef,
-  settingsOpen,
 }: {
   focusHandlers: ReaderChromeFocusHandlers;
   hasNextChapter: boolean;
@@ -220,10 +215,8 @@ export function ReaderBottomBar({
   chapterListExpanded: boolean;
   onNextChapter: () => void;
   onOpenChapters: () => void;
-  onOpenSettings: () => void;
   onPreviousChapter: () => void;
   seekSlotRef: (element: HTMLDivElement | null) => void;
-  settingsOpen: boolean;
 }) {
   const { t } = useTranslation();
 
@@ -263,18 +256,6 @@ export function ReaderBottomBar({
         variant="subtle"
       >
         {t("reader.chapters")}
-      </Button>
-      <Button
-        aria-expanded={settingsOpen}
-        aria-label={t("reader.openSettings")}
-        className="norea-reader-footer-action norea-reader-bottombar-settings norea-state-layer"
-        data-active={settingsOpen || undefined}
-        leftSection={<ReaderSettingsIcon />}
-        onClick={onOpenSettings}
-        title={t("reader.openSettings")}
-        variant="subtle"
-      >
-        {t("reader.settingsShort")}
       </Button>
     </footer>
   );

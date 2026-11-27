@@ -234,6 +234,100 @@
   scroll-margin-top: var(--norea-space-4);
 }
 
+.norea-downloads-queue-summary {
+  display: grid;
+  gap: var(--norea-space-2);
+  min-width: 0;
+}
+
+.norea-downloads-queue-summary .norea-downloads-summary {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.norea-queue-attention-band {
+  align-items: center;
+  background: var(--norea-color-warn-soft);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-on-warn-soft);
+  display: flex;
+  font-size: var(--norea-text-md);
+  font-weight: var(--norea-weight-bold);
+  gap: var(--norea-space-2);
+  margin: 0;
+  min-height: var(--norea-control-md);
+  padding-inline: var(--norea-space-3);
+}
+
+.norea-queue-attention-band > svg {
+  flex: 0 0 auto;
+  height: var(--norea-icon-md);
+  width: var(--norea-icon-md);
+}
+
+.norea-queue-attention-band .norea-downloads-warning {
+  border-radius: var(--norea-radius-sm);
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  margin-inline-start: auto;
+  min-height: var(--norea-control-md);
+  padding-inline: var(--norea-space-2);
+  text-align: end;
+  white-space: normal;
+}
+
+.norea-downloads-attention {
+  gap: 0;
+  scroll-margin-block-start: calc(var(--norea-app-bar-height) + 7rem);
+}
+
+.norea-downloads-attention > section.norea-source-access-banner {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--norea-color-rule);
+  border-radius: 0;
+  gap: var(--norea-space-2);
+  grid-template-columns: 0.375rem minmax(0, 1fr) auto;
+  padding: var(--norea-space-3) var(--norea-space-1);
+}
+
+.norea-downloads-attention > .norea-source-access-banner::before {
+  align-self: start;
+  background: var(--norea-color-icon-subtle);
+  border-radius: 50%;
+  content: "";
+  height: 0.375rem;
+  margin-top: var(--norea-space-2);
+  width: 0.375rem;
+}
+
+.norea-downloads-attention .norea-source-access-icon {
+  display: none;
+}
+
+.norea-downloads-attention .norea-source-access-copy h3 {
+  font-size: var(--norea-text-md);
+  line-height: var(--norea-leading-tight);
+}
+
+.norea-download-failure-source {
+  color: var(--norea-color-ink-muted);
+  display: block;
+  font-size: var(--norea-text-xs);
+  font-weight: var(--norea-weight-medium);
+  margin-bottom: var(--norea-space-1);
+}
+
+.norea-downloads-attention .norea-source-access-banner > :last-child:not(.norea-source-access-copy) {
+  flex-wrap: nowrap;
+  gap: 0;
+}
+
+.norea-downloads-attention .norea-icon-button {
+  --norea-icon-button-size: var(--norea-control-md);
+}
+
 .norea-downloads-section-title {
   color: var(--norea-color-ink);
   font-family: var(--norea-font-ui);
@@ -457,9 +551,24 @@
   cursor: pointer;
   flex: 0 0 auto;
   font: inherit;
-  padding: 0;
+  min-height: var(--norea-control-md);
+  min-width: var(--norea-control-md);
+  padding-inline: var(--norea-space-2);
   text-decoration: underline;
   text-underline-offset: 0.15em;
+}
+
+.norea-task-virtual-window .norea-task-row-main:has(.norea-task-row-error-details) {
+  padding-inline-end: calc(var(--norea-control-md) + var(--norea-space-2));
+  position: relative;
+}
+
+.norea-task-virtual-window .norea-task-row-error-details {
+  inset-inline-end: 0;
+  padding-inline: 0;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .norea-task-row-error-details:focus-visible {

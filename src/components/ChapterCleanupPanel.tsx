@@ -1,6 +1,7 @@
-import { Button, Checkbox, Group, MultiSelect, Select, Stack, Text } from "@mantine/core";
+import { CategorySelectOption, UserCategoryName, withCategoryNames } from "./UserCategoryName";
+import { Button, Checkbox, Group, MultiSelect, Pill, Select, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { listCategories, UNCATEGORIZED_CATEGORY_ID } from "../db/queries/category";
 import { useTranslation, type TranslationKey } from "../i18n";
 import {
@@ -127,8 +128,13 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
     { value: String(UNCATEGORIZED_CATEGORY_ID), label: t("categories.uncategorized") },
     ...(categories.data ?? []).map(category => ({ value: String(category.id), label: category.name })),
   ];
+  const isUserCategory = (value: string) => categories.data?.some(category => category.id === Number(value) && !category.isSystem) ?? false;
+  const categoryLabel = (value: string, label: string) => isUserCategory(value) ? <UserCategoryName name={label} /> : label;
   const selectedCategoryNames = filters.categories.mode === "all" ? t("categories.all")
-    : filters.categories.ids.map(id => categoryOptions.find(option => option.value === String(id))?.label ?? String(id)).join(", ") || t("chapterCleanup.none");
+    : filters.categories.ids.length === 0 ? t("chapterCleanup.none")
+    : filters.categories.ids.map((id, index) => <Fragment key={id}>
+        {index > 0 ? ", " : null}{categoryLabel(String(id), categoryOptions.find(option => option.value === String(id))?.label ?? String(id))}
+      </Fragment>);
   const skipEntries = Object.entries(preview?.skipped ?? {}) as [ChapterCleanupSkipReason, number][];
   const servers = preview?.checkedServers ?? [];
   const resultReasons = new Map<string, number>();
@@ -155,9 +161,13 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
         onChange={value => { if (value === "all" || value === "selected") changeFilters({ ...filters, categories: value === "all" ? { mode: "all" } : { mode: "selected", ids: [] } }); }} />
       {filters.categories.mode === "selected" ? <MultiSelect label={t("chapterCleanup.categories.choose")} data={categoryOptions}
         value={filters.categories.ids.map(String)} disabled={disabled || categories.isLoading || categories.isError}
+        renderOption={({ option, checked }) => <CategorySelectOption label={option.label} checked={checked} userDefined={isUserCategory(option.value)} />}
+        renderPill={({ option, onRemove, disabled: pillDisabled }) => <Pill disabled={pillDisabled} withRemoveButton onRemove={onRemove}>
+          {categoryLabel(String(option.value), option.label)}
+        </Pill>}
         error={categories.isError ? t("chapterCleanup.categories.error") : undefined}
         onChange={ids => changeFilters({ ...filters, categories: { mode: "selected", ids: ids.map(Number) } })} /> : null}
-      <Text size="sm">{t("chapterCleanup.conditions", { server: t(SERVER_OPTIONS[filters.server as ManualChapterCleanupServerMode]), reading: t(filters.reading === "read" ? "chapterCleanup.reading.read" : "chapterCleanup.reading.all"), categories: selectedCategoryNames })}</Text>
+      <Text size="sm">{withCategoryNames(t("chapterCleanup.conditions", { server: t(SERVER_OPTIONS[filters.server as ManualChapterCleanupServerMode]), reading: t(filters.reading === "read" ? "chapterCleanup.reading.read" : "chapterCleanup.reading.all") }), selectedCategoryNames)}</Text>
       {!running && !confirming ? <Group><TextButton onClick={() => { void createPreview(); }} disabled={inspecting} loading={inspecting}>{t("chapterCleanup.preview")}</TextButton>
         {inspecting ? <TextButton onClick={clearPreview}>{t("common.cancel")}</TextButton> : null}</Group> : null}
       {inspecting ? <Text size="sm" role="status">{t("chapterCleanup.checking", { count: checked })}</Text> : null}

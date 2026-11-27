@@ -8,8 +8,8 @@ import { DeselectIcon, OverflowIcon, SelectAllIcon, type AppIcon } from "./icons
 import { OverflowMenu } from "./OverflowMenu";
 
 interface SelectionBarProps {
-  /** Labeled actions: a bottom bar below 768px, inline in the bar above. */
-  actions: ReactNode;
+  /** Inline actions on wide screens, replacing mobile navigation on narrow screens. */
+  actions?: ReactNode;
   /** Every selectable item is selected, so the toggle offers to deselect them all. */
   allSelected: boolean;
   /** The page header's sub-row, kept so selecting does not move the content. */
@@ -45,7 +45,7 @@ export function SelectionBar({
 }: SelectionBarProps) {
   const { t } = useTranslation();
   const hintId = useId();
-  useBodyFlag("selection-bar", true);
+  useBodyFlag("selection-bar", Boolean(actions));
 
   return (
     <PageHeader
@@ -66,7 +66,7 @@ export function SelectionBar({
               <SelectAllIcon />
             </IconButton>
           )}
-          <div className="norea-selection-bar-actions">{actions}</div>
+          {actions ? <div className="norea-selection-bar-actions">{actions}</div> : null}
         </>
       }
       aria-describedby={hint ? hintId : undefined}

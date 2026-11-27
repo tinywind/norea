@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import {
   ColorInput,
   Select,
@@ -13,6 +13,7 @@ import {
   SettingsSection,
   SettingsWideField,
 } from "../SettingsPrimitives";
+import { CheckIcon } from "../ui/icons";
 import { isAndroidRuntime } from "../../lib/tauri-runtime";
 import { useTranslation } from "../../i18n";
 import {
@@ -36,6 +37,7 @@ function ThemeSwatches({
   onChange: (id: AppThemeId) => void;
 }) {
   const { t } = useTranslation();
+  const groupName = useId();
   const scheme = useComputedColorScheme("light");
   const swatches = useMemo(
     () =>
@@ -61,24 +63,34 @@ function ThemeSwatches({
       role="radiogroup"
     >
       {swatches.map((swatch) => (
-        <button
-          aria-checked={swatch.id === value}
+        <label
           className="norea-settings-theme-swatch norea-state-layer"
           key={swatch.id}
-          onClick={() => onChange(swatch.id)}
-          role="radio"
-          type="button"
         >
+          <input
+            aria-checked={swatch.id === value}
+            checked={swatch.id === value}
+            name={groupName}
+            onChange={() => onChange(swatch.id)}
+            role="radio"
+            type="radio"
+            value={swatch.id}
+          />
           <span
             aria-hidden="true"
             className="norea-settings-theme-swatch-preview"
-            style={{ background: swatch.background }}
+            style={{
+              background: `linear-gradient(90deg, ${swatch.surface} 26%, ${swatch.background} 26%)`,
+            }}
           >
             <span style={{ background: swatch.surface }} />
             <span style={{ background: swatch.accent }} />
           </span>
-          <span className="norea-settings-theme-swatch-label">{swatch.label}</span>
-        </button>
+          <span className="norea-settings-theme-swatch-label">
+            {swatch.label}
+            {swatch.id === value ? <CheckIcon size="1rem" /> : null}
+          </span>
+        </label>
       ))}
     </div>
   );

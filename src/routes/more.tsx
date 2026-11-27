@@ -15,7 +15,7 @@ import {
 import { useTranslation } from "../i18n";
 import { OPENED_FROM_MORE_STATE } from "../lib/navigation-history";
 import { getBuildInfo } from "../lib/update";
-import { useTaskAttentionCount } from "../lib/tasks/hooks";
+import { useTaskBadgeCounts } from "../lib/tasks/hooks";
 import { useLibraryStore } from "../store/library";
 import "../styles/more.css";
 
@@ -36,6 +36,7 @@ function MoreLinkRow({
   to: "/downloads" | "/browse/extensions" | "/settings";
   section?: string;
 }) {
+  const { locale } = useTranslation();
   const content = (
     <>
       <Icon className="norea-more-row-icon" />
@@ -45,7 +46,7 @@ function MoreLinkRow({
           <span className="norea-more-row-description">{description}</span>
         ) : null}
       </span>
-      {badge ? <span className="norea-more-row-badge">{badge}</span> : null}
+      {badge ? <span className="norea-more-row-badge">{badge.toLocaleString(locale)}</span> : null}
       <ChevronRightIcon className="norea-more-row-chevron" />
     </>
   );
@@ -106,7 +107,7 @@ export function MorePage() {
   const { t } = useTranslation();
   const incognitoMode = useLibraryStore((state) => state.incognitoMode);
   const setIncognitoMode = useLibraryStore((state) => state.setIncognitoMode);
-  const taskAttentionCount = useTaskAttentionCount();
+  const tasks = useTaskBadgeCounts();
   const pluginUpdateCount = usePluginUpdateCount(true);
   const versionLabel = useAppVersionLabel();
 
@@ -130,8 +131,10 @@ export function MorePage() {
       </div>
       <ul className="norea-more-group norea-more-list">
         <MoreLinkRow
-          badge={taskAttentionCount}
-          description={t("more.downloads.description")}
+          badge={tasks.failed || tasks.active}
+          description={tasks.active || tasks.failed
+            ? t("more.downloads.taskCounts", tasks)
+            : t("more.downloads.description")}
           icon={DownloadsIcon}
           label={t("downloads.title")}
           to="/downloads"

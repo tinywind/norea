@@ -236,6 +236,7 @@ export function MergeMapStep({
   const maxPosition = Math.max(1, composition.length - selectedFinalEntries.length + 1);
   const positionNumber = Number(position);
   const validPosition = Number.isSafeInteger(positionNumber) && positionNumber >= 1 && positionNumber <= maxPosition;
+  const pairDifference = selectedSourceOrder.length - selectedTargetOrder.length;
   const canPair = selectedSourceOrder.length > 0 && selectedSourceOrder.length === selectedTargetOrder.length;
   const hasSelectedPairs = selectedFinalEntries.some(entry => entry.sourceChapterIds.length > 0 && entry.targetChapterPath !== undefined);
 
@@ -357,11 +358,15 @@ export function MergeMapStep({
       </div>
       <div className="norea-compose-link-bar">
         <Text size="xs">{t("novelMerge.compose.pairSelection", { source: selectedSources.size, target: selectedTargets.size })}</Text>
-        <Button disabled={!canPair} onClick={() => {
+        <span aria-live="polite" className="norea-compose-link-help" id="merge-pair-help">
+          {pairDifference === 0
+            ? t("novelMerge.compose.pairHelp")
+            : t(pairDifference > 0 ? "novelMerge.compose.needB" : "novelMerge.compose.needA", { count: Math.abs(pairDifference) })}
+        </span>
+        <Button aria-describedby="merge-pair-help" disabled={!canPair} onClick={() => {
           apply(pairCompositionRanges(composition, selectedSourceOrder, selectedTargetOrder, downloadedSourceIds), t("novelMerge.compose.paired", { count: selectedSourceOrder.length }));
           setSelectedSources(new Set()); setSelectedTargets(new Set());
         }} size="xs" variant="default">{t("novelMerge.compose.pairRanges")}</Button>
-        <span className="norea-compose-link-help">{t("novelMerge.compose.pairHelp")}</span>
       </div>
       <div className="norea-compose-panes">
         <SelectionPane

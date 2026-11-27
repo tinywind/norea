@@ -56,7 +56,6 @@ import {
   isServerChapterMissingFailure,
   isServerChapterMissingWithoutSourceFailure,
 } from "../lib/tasks/download-failure";
-import { useLibraryStore } from "../store/library";
 import { useReaderStore } from "../store/reader";
 import { useReaderLayoutStore } from "../store/reader-layout";
 import { OVERLAY_MOTION } from "../theme/motion";
@@ -396,7 +395,6 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     },
     [closeChapterList, openChapter],
   );
-  const setIncognitoMode = useLibraryStore((state) => state.setIncognitoMode);
   const [seekbarContainer, setSeekbarContainer] =
     useState<HTMLElement | null>(null);
   useEffect(() => {
@@ -820,7 +818,6 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
         incognitoMode={incognitoMode}
         novelName={currentNovel?.name}
         onBack={handleReaderBack}
-        onIncognitoModeChange={setIncognitoMode}
         onOpenSettings={toggleReaderSettings}
         onRepairMedia={() => repairMediaMutation.mutate()}
         onToggleBookmark={() => bookmarkMutation.mutate()}
@@ -906,10 +903,8 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
         hasPreviousChapter={!!previousChapter}
         onNextChapter={() => openAdjacentChapter(1)}
         onOpenChapters={toggleChapters}
-        onOpenSettings={toggleReaderSettings}
         onPreviousChapter={() => openAdjacentChapter(-1)}
         seekSlotRef={setSeekbarContainer}
-        settingsOpen={readerSettingsOpen}
       />
       <ReaderChapterSheet
         chapters={chapters}

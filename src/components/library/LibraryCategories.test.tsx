@@ -271,7 +271,12 @@ function categoryTabsHarness() {
     capturedPointers.delete(pointerId);
   });
   const hasPointerCapture = vi.fn((pointerId: number) => capturedPointers.has(pointerId));
-  const tab = { getBoundingClientRect: () => bounds, scrollIntoView } as unknown as HTMLButtonElement;
+  let focusVisible = true;
+  const tab = {
+    getBoundingClientRect: () => bounds,
+    matches: (selector: string) => selector === ":focus-visible" && focusVisible,
+    scrollIntoView,
+  } as unknown as HTMLButtonElement;
   const strip = {
     addEventListener,
     clientLeft: 0,
@@ -385,8 +390,11 @@ function categoryTabsHarness() {
       } as unknown as WheelEvent);
       return preventDefault;
     },
-    focusFirst: () => (buttons()[0]!.props.onFocus as (event: { currentTarget: HTMLButtonElement }) => void)({ currentTarget: tab }),
-    selectLast: () => (buttons().at(-1)!.props.onClick as () => void)(),
+    focusTab: (index: number, keyboard = true) => {
+      focusVisible = keyboard;
+      (buttons().at(index)!.props.onFocus as (event: { currentTarget: HTMLButtonElement }) => void)({ currentTarget: tab });
+    },
+    selectLast: (detail = 0) => (buttons().at(-1)!.props.onClick as (event: { detail: number }) => void)({ detail }),
     unmount: harness.unmount,
   };
 }
@@ -407,10 +415,30 @@ it("reveals active and keyboard-focused categories by moving only their horizont
     expect(harness.scrollBy).toHaveBeenLastCalledWith({ left: -30 });
 
     harness.setBounds(280, 400);
-    harness.focusFirst();
+    harness.focusTab(0);
     expect(harness.scrollBy).toHaveBeenLastCalledWith({ left: 140 });
     expect(harness.onSelect).not.toHaveBeenCalled();
     expect(harness.scrollIntoView).not.toHaveBeenCalled();
+  } finally {
+    await harness.unmount();
+  }
+});
+
+it("keeps the strip in place when a partly visible category is tapped", async () => {
+  const harness = categoryTabsHarness();
+  try {
+    await harness.render(null);
+    harness.setBounds(220, 310);
+    harness.scrollBy.mockClear();
+
+    harness.focusTab(-1, false);
+    harness.selectLast(1);
+    await harness.render(entries.at(-1)!.id);
+    expect(harness.onSelect).toHaveBeenCalledExactlyOnceWith(entries.at(-1)!.id);
+    expect(harness.scrollBy).not.toHaveBeenCalled();
+
+    await harness.render(null);
+    expect(harness.scrollBy).toHaveBeenCalledExactlyOnceWith({ left: 50 });
   } finally {
     await harness.unmount();
   }

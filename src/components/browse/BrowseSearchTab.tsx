@@ -1,3 +1,4 @@
+import { formatUserCategoryName } from "../UserCategoryName";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
@@ -392,7 +393,7 @@ export function SearchResultSection({
           const key = resultKey(result.pluginId, novel.path);
           const inLibrary = isInLibrary(result.pluginId, novel.path);
           const target: QuickAddTarget = { kind: "source", item: novel, plugin };
-          const categories = (categoriesOf?.(result.pluginId, novel.path) ?? EMPTY_CATEGORIES).join(", ");
+          const categories = (categoriesOf?.(result.pluginId, novel.path) ?? EMPTY_CATEGORIES).map(formatUserCategoryName).join(", ");
           return (
             <QuickAddCard
               key={`${key}::${index}`}
@@ -417,7 +418,7 @@ export function SearchResultSection({
               {categories ? (
                 <span
                   aria-label={`${t("categories.title")}: ${categories}`}
-                  className="norea-source-card-categories"
+                  className="norea-source-card-categories norea-user-category-name"
                   title={categories}
                 >
                   {categories}

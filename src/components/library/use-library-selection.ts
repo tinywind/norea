@@ -21,6 +21,7 @@ import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invali
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { type LibrarySortOrder } from "../../store/library";
+import { useConfirm } from "../ui/ConfirmDialog";
 import { showReadStateUndoToast } from "../read-state-undo-toast";
 import { chaptersKey, novelKey } from "../novel/novel-detail-model";
 import { downloadOnceNotice, queueChapterDownloadsOnce, type DownloadOnceSelection } from "./download-once";
@@ -32,6 +33,7 @@ export function useLibrarySelection(
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const {
     search: debouncedSearch,
     categoryId: selectedCategoryId,
@@ -198,12 +200,28 @@ export function useLibrarySelection(
   });
 
   const setNovelsReadStateMutation = useMutation({
-    mutationFn: ({ novelIds, unread }: SetNovelsReadStateInput) => setNovelsReadState(novelIds, unread),
-    onSuccess: ({ previous }, { novelIds, unread }) => {
+    mutationFn: async ({ novelIds, unread }: SetNovelsReadStateInput) => {
+      let limit = MAX_CHAPTER_BULK_INPUT_ROWS;
+      for (;;) {
+        const result = await setNovelsReadState(novelIds, unread, limit);
+        if (result.confirmationChapterCount === undefined) return result;
+        limit = result.confirmationChapterCount;
+        const action = t(unread ? "selection.markUnread" : "selection.markRead");
+        if (!await confirm({
+          confirmLabel: action,
+          danger: true,
+          message: t("library.readState.confirmBulk", { chapters: limit, count: novelIds.length }),
+          title: action,
+        })) return null;
+      }
+    },
+    onSuccess: (result, { novelIds, unread }) => {
+      if (!result) return;
+      const { previous, rowsAffected } = result;
       exitSelection();
       refreshReadState(novelIds);
       const message = t(unread ? "library.readState.markedUnread" : "library.readState.markedRead", {
-        chapters: previous.length,
+        chapters: rowsAffected,
         count: novelIds.length,
       });
       // Restoring is bounded by the bulk chapter limit, so a larger change is reported without Undo.

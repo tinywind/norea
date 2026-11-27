@@ -42,6 +42,7 @@ import {
   findChapterForJump,
   findContinueReadingTarget,
   FINISHED_PROGRESS,
+  getNovelChapterStats,
   hasChapterListFilters,
   hasReadingHistory,
   NO_CHAPTER_LIST_FILTERS,
@@ -258,15 +259,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     () => sourceDuplicateChapterCountsById(chapters, sourceDuplicateChapters),
     [chapters, sourceDuplicateChapters],
   );
-  const chapterStats = useMemo(() => {
-    let downloaded = 0;
-    let unread = 0;
-    for (const chapter of rows) {
-      if (hasStoredChapterContent(chapter)) downloaded += 1;
-      if (chapter.progress < FINISHED_PROGRESS) unread += 1;
-    }
-    return { downloaded, unread };
-  }, [rows]);
+  const chapterStats = useMemo(() => getNovelChapterStats(rows), [rows]);
   const selectedChapters = useMemo(
     () => visibleChapters.filter((chapter) => selectedChapterIds.has(chapter.id)),
     [visibleChapters, selectedChapterIds],
@@ -340,9 +333,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     if (!title || !scrollElement || typeof IntersectionObserver === "undefined") {
       return;
     }
+    const barHeight = scrollElement.querySelector<HTMLElement>(".norea-novel-app-bar")?.offsetHeight ?? 0;
     const observer = new IntersectionObserver(
       ([entry]) => setTitleScrolledAway(entry ? !entry.isIntersecting : false),
-      { root: scrollElement },
+      { root: scrollElement, rootMargin: `-${barHeight}px 0px 0px` },
     );
     observer.observe(title);
     return () => observer.disconnect();
@@ -644,6 +638,15 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     ? serverSync.sourceError
     : null;
 
+  const toggleLibrary = () => toggle.mutate(novel.inLibrary ? {
+    downloadedCount: chapterStats.downloaded,
+    serverWork: !serverWorkAbsent,
+  } : undefined, {
+    onSuccess: (result) => {
+      if (result?.inLibrary) showAddedToLibrary(result.novel.id);
+      else if (!result && serverSourceQuery.data) serverSync.retry();
+    },
+  });
   const overflowItems: OverflowMenuItem[] = [];
   if (!novel.isLocal) {
     overflowItems.push({
@@ -698,6 +701,15 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
         },
       },
     );
+  }
+
+  if (novel.inLibrary) {
+    overflowItems.push({
+      danger: true,
+      disabled: toggle.isPending,
+      label: t("novel.removeFromLibrary"),
+      onClick: toggleLibrary,
+    });
   }
 
   const rangeStartChapter = rangeStartChapterId === null
@@ -868,9 +880,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 key={novel.id}
                 allowSourceAccess={allowSourceAccess}
                 hasServerSource={Boolean(serverSourceQuery.data)}
-                categoryChips={novel.inLibrary || serverSourceQuery.data ? (
+                categoryChips={novel.inLibrary || novel.categories?.length || serverSourceQuery.data ? (
                   <NovelCategoryEditor
                     key={novel.id}
+                    initialCategories={novel.categories}
                     active={active}
                     novelId={novel.id}
                     novelName={novel.name}
@@ -880,6 +893,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   />
                 ) : null}
                 chapters={chapters}
+                chapterStats={chaptersQuery.data ? chapterStats : undefined}
                 checkingNewChapters={serverSync.checking}
                 downloadStatuses={statuses}
                 lastReadChapterId={lastReadChapterId}
@@ -892,18 +906,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   showTagInLibrary(genre);
                   void navigate({ to: "/" });
                 }}
-                onToggleLibrary={() =>
-                  toggle.mutate(novel.inLibrary ? {
-                    downloadedCount: chapterStats.downloaded,
-                    serverWork: !serverWorkAbsent,
-                  } : undefined, {
-                    onSuccess: (result) => {
-                      if (result?.inLibrary) showAddedToLibrary(result.novel.id);
-                      // Removing may have deleted the work's files; a server work reads its metadata and cover again.
-                      else if (!result && serverSourceQuery.data) serverSync.retry();
-                    },
-                  })
-                }
+                onToggleLibrary={toggleLibrary}
                 sourceName={sourceName}
                 titleRef={titleRef}
               />

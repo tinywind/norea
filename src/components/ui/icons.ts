@@ -19,6 +19,7 @@ import {
   IconCheckbox,
   IconChecks,
   IconClock,
+  IconClockPause,
   IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
@@ -43,6 +44,7 @@ import {
   IconFolder,
   IconGripVertical,
   IconHeartFilled,
+  IconHeartMinus,
   IconHeartPlus,
   IconHistory,
   IconInfoCircle,
@@ -56,7 +58,7 @@ import {
   IconPinnedOff,
   IconPlayerPause,
   IconPlayerPlay,
-  IconPlayerSkipBack,
+  IconPlayerSkipForward,
   IconPlugConnected,
   IconPlugConnectedX,
   IconPlus,
@@ -103,6 +105,7 @@ function withAppDefaults(Icon: TablerIcon): AppIcon {
 
 export const LibraryIcon = withAppDefaults(IconBooks);
 export const AddToLibraryIcon = withAppDefaults(IconHeartPlus);
+export const RemoveFromLibraryIcon = withAppDefaults(IconHeartMinus);
 export const InLibraryIcon = withAppDefaults(IconHeartFilled);
 export const OpenWorkIcon = withAppDefaults(IconBook);
 export const UpdatesIcon = withAppDefaults(IconBell);
@@ -135,6 +138,7 @@ export const MarkUnreadIcon = withAppDefaults(IconEyeOff);
 export const UnreadIcon = withAppDefaults(IconPointFilled);
 export const DownloadIcon = withAppDefaults(IconDownload);
 export const DownloadedIcon = withAppDefaults(IconCloudCheck);
+export const HistoryPausedIcon = withAppDefaults(IconClockPause);
 export const QueuedIcon = withAppDefaults(IconClock);
 export const TrashIcon = withAppDefaults(IconTrash);
 export const BookmarkIcon = withAppDefaults(IconBookmark);
@@ -145,7 +149,7 @@ export const OverflowIcon = withAppDefaults(IconDotsVertical);
 export const PlusIcon = withAppDefaults(IconPlus);
 export const MinusIcon = withAppDefaults(IconMinus);
 export const PlayIcon = withAppDefaults(IconPlayerPlay);
-export const FromStartIcon = withAppDefaults(IconPlayerSkipBack);
+export const FromStartIcon = withAppDefaults(IconPlayerSkipForward);
 export const PauseIcon = withAppDefaults(IconPlayerPause);
 export const RestartIcon = withAppDefaults(IconRotateClockwise);
 export const ResetIcon = withAppDefaults(IconRotate);

@@ -12,7 +12,6 @@ import {
 } from "../components/browse/use-plugin-catalog";
 import { ExtensionsIcon } from "../components/ui/icons";
 import { useTranslation } from "../i18n";
-import { useContentSyncStore } from "../store/content-sync";
 import "../styles/browse.css";
 
 /** "search" is the sources list with the global search under it. */
@@ -32,8 +31,6 @@ export function BrowsePage({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const installed = useInstalledPlugins(active && tab !== "server");
-  const serverConfigured = useContentSyncStore((state) => state.serverUrl !== "");
-  const showServerTab = serverConfigured || tab === "server";
   const installedPlugins = installed.data ?? [];
   const updateCount = usePluginUpdateCount(active);
   const [serverSelecting, setServerSelecting] = useState(false);
@@ -66,12 +63,10 @@ export function BrowsePage({
       }
       title={t("browse.title")}
     >
-      {showServerTab ? (
-        <Tabs.List className="norea-app-bar-tabs">
-          <Tabs.Tab value="search">{t("browse.tab.sources")}</Tabs.Tab>
-          <Tabs.Tab value="server">{t("browse.tab.server")}</Tabs.Tab>
-        </Tabs.List>
-      ) : null}
+      <Tabs.List className="norea-app-bar-tabs">
+        <Tabs.Tab value="search">{t("browse.tab.sources")}</Tabs.Tab>
+        <Tabs.Tab value="server">{t("browse.tab.server")}</Tabs.Tab>
+      </Tabs.List>
     </PageHeader>
   );
 
@@ -115,17 +110,15 @@ export function BrowsePage({
           ) : null}
         </Tabs.Panel>
 
-        {showServerTab ? (
-          <Tabs.Panel value="server" className="norea-browse-tab-panel">
-            {active && tab === "server" ? (
-              <BrowseServerTab
-                active
-                onSelectionModeChange={setServerSelecting}
-                selectionHeaderSlot={selecting ? selectionHeaderSlot : null}
-              />
-            ) : null}
-          </Tabs.Panel>
-        ) : null}
+        <Tabs.Panel value="server" className="norea-browse-tab-panel">
+          {active && tab === "server" ? (
+            <BrowseServerTab
+              active
+              onSelectionModeChange={setServerSelecting}
+              selectionHeaderSlot={selecting ? selectionHeaderSlot : null}
+            />
+          ) : null}
+        </Tabs.Panel>
       </PageFrame>
     </Tabs>
   );

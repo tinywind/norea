@@ -1,3 +1,4 @@
+import { formatUserCategoryName } from "../UserCategoryName";
 import { Button, Checkbox, Group, Loader, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
@@ -130,7 +131,8 @@ export function LibraryCategorySheet({
               disabled={applying || membership.isLoading}
               indeterminate={row.current === "some"}
               key={row.category.id}
-              label={row.category.name}
+              classNames={{ label: row.category.isSystem ? undefined : "norea-user-category-name" }}
+              label={row.category.isSystem ? row.category.name : formatUserCategoryName(row.category.name)}
               onChange={() =>
                 setTargets((current) => {
                   const next = new Map(current);

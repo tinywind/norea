@@ -1,17 +1,14 @@
 import { useEffect } from "react";
-import { Select, Stack } from "@mantine/core";
+import { Button, Select, Stack } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { BackupFolderAttention } from "../BackupFolderAttention";
 import { ContentServerSettings } from "../ContentServerSettings";
 import {
   SettingsFieldRow,
-  SettingsInlineControls,
   SettingsSection,
 } from "../SettingsPrimitives";
-import { IconButton } from "../IconButton";
 import { useConfirm } from "../ui/ConfirmDialog";
-import { ExportIcon, ImportIcon } from "../ui/icons";
 import { exportBackupToFile, importBackupFromFile } from "../../lib/backup/io";
 import { describeError } from "../../lib/errors";
 import { usePageActivity } from "../../lib/page-activity";
@@ -124,7 +121,7 @@ function AutomaticBackupSettings() {
   );
 }
 
-export function BackupSection({ isBusy, onBusyChange }: SettingsBusyProps) {
+export function BackupSection({ busyAction, isBusy, onBusyChange }: SettingsBusyProps) {
   const { t } = useTranslation();
   const confirm = useConfirm();
   const queryClient = useQueryClient();
@@ -179,7 +176,7 @@ export function BackupSection({ isBusy, onBusyChange }: SettingsBusyProps) {
     const confirmed = await confirm({
       title: t("settings.data.importBackup"),
       message: t("settings.data.restoreWarning"),
-      confirmLabel: t("settings.data.importBackup"),
+      confirmLabel: t("settings.data.restoreAction"),
       danger: true,
     });
     if (!confirmed) return;
@@ -234,32 +231,17 @@ export function BackupSection({ isBusy, onBusyChange }: SettingsBusyProps) {
       <SettingsSection title={t("settings.data.backup.title")}>
         <SettingsFieldRow
           label={t("settings.data.backupFile.label")}
+          layout="stacked"
           description={t("settings.data.backupFile.description")}
         >
-          <SettingsInlineControls>
-            <IconButton
-              label={t("settings.data.exportBackup")}
-              size="lg"
-              onClick={() => {
-                void handleExport();
-              }}
-              loading={isBusy}
-              disabled={isBusy}
-            >
-              <ExportIcon />
-            </IconButton>
-            <IconButton
-              label={t("settings.data.importBackup")}
-              size="lg"
-              onClick={() => {
-                void handleImport();
-              }}
-              loading={isBusy}
-              disabled={isBusy}
-            >
-              <ImportIcon />
-            </IconButton>
-          </SettingsInlineControls>
+          <div className="norea-backup-file-actions">
+            <Button disabled={isBusy} loading={busyAction === "settings:backup:export"} onClick={() => void handleExport()} variant="default">
+              {t("settings.data.exportBackup")}
+            </Button>
+            <Button disabled={isBusy} loading={busyAction === "settings:backup:restore"} onClick={() => void handleImport()} variant="default">
+              {t("settings.data.importBackup")}
+            </Button>
+          </div>
         </SettingsFieldRow>
       </SettingsSection>
 

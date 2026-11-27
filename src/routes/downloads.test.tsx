@@ -1,4 +1,5 @@
 import { MantineProvider } from "@mantine/core";
+import { load } from "cheerio";
 import type { ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -68,13 +69,18 @@ describe("Downloads hub", () => {
   });
 
   it.each(["queue", "storage"] as const)("renders only the %s view with the bar's view tabs", (view) => {
-    const markup = render(view);
+    const $ = load(render(view));
+    const section = $("section[data-view]");
+    expect(section).toHaveLength(1);
+    expect(section.attr("data-view")).toBe(view);
+    expect(section.attr("data-active")).toBe("true");
+    expect(section.find(".norea-downloads-compact-title").text()).toBe("Downloads");
 
-    expect(markup).toContain(
-      `<section data-active="true" data-view="${view}"><div data-tabs="${view}"><div class="norea-app-bar-tabs">` +
-        `<span data-tab="queue">Queue</span><span data-tab="storage">Storage</span></div></div></section>`,
-    );
-    expect(markup.match(/data-view=/g)).toHaveLength(1);
+    const tabs = section.find(`[data-tabs="${view}"] .norea-app-bar-tabs [data-tab]`);
+    expect(tabs.toArray().map((tab) => ({ value: $(tab).attr("data-tab"), label: $(tab).text() }))).toEqual([
+      { value: "queue", label: "Queue" },
+      { value: "storage", label: "Storage" },
+    ]);
   });
 
   it("passes the hidden state through to the selected view", () => {

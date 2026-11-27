@@ -1,4 +1,4 @@
-import { Button, Group, NumberInput, Stack, Text } from "@mantine/core";
+import { Button, Group, NumberInput, Stack } from "@mantine/core";
 import { useMemo, useState } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation } from "../../i18n";
@@ -48,15 +48,12 @@ function ChapterRangeForm({ chapters, initialFrom, onCancel, onSelect }: Chapter
             value={to}
           />
         </Group>
-        <Text aria-live="polite" c="dimmed" size="sm">
-          {t("novel.range.matchCount", { count: matchedIds.length })}
-        </Text>
         <Group gap="xs" justify="flex-end">
           <Button onClick={onCancel} variant="default">
             {t("common.cancel")}
           </Button>
           <Button disabled={matchedIds.length === 0} type="submit">
-            {t("novel.select")}
+            <span aria-live="polite">{t("novel.range.selectCount", { count: matchedIds.length })}</span>
           </Button>
         </Group>
       </Stack>

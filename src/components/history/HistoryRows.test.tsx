@@ -18,8 +18,8 @@ vi.mock("../../i18n", () => ({
   useTranslation: () => ({
     locale: "en",
     t: (key: string, values?: Record<string, unknown>) =>
-      key === "history.chapterNumber"
-        ? `Ch. ${values?.number}`
+      key === "novel.continueChapter" ? `Continue Ch. ${values?.number}`
+        : key === "history.continueNamedChapter" ? `Continue ${values?.name}`
         : values
           ? `${key}${JSON.stringify(values)}`
           : key,
@@ -28,7 +28,7 @@ vi.mock("../../i18n", () => ({
 vi.mock("../../lib/use-novel-cover-source", () => ({ useNovelCoverSource: () => null }));
 vi.mock("../../lib/plugins/manager", () => ({ pluginManager: { getPlugin: () => undefined } }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: (options: { enabled: boolean }) => ({ data: options.enabled ? next.data : undefined }),
+  useQuery: (options: { enabled: boolean }) => ({ data: options.enabled ? next.data : undefined, isPending: next.data === undefined }),
 }));
 
 import { HistoryRow } from "./HistoryRows";
@@ -77,13 +77,13 @@ describe("HistoryRow", () => {
     expect($("button button, button a, button input")).toHaveLength(0);
     const row = $("button").first();
     row.find('[aria-hidden="true"]').remove();
-    expect(row.text()).toBe("Novel TitleCh. 52 · 45% · 3h ago");
+    expect(row.text()).toBe("Novel TitleContinue Ch. 52 · 45% · 3h ago");
   });
 
   it("shows progress and time as one meta line with a thin bar", () => {
     const $ = render();
     expect($('[aria-hidden="true"] [style="--norea-history-progress:45%"]')).toHaveLength(1);
-    expect(render({ entry: { ...entry, progress: 100 } }).text()).toContain("Ch. 52 · common.finished · 3h ago");
+    expect(render({ entry: { ...entry, progress: 100 } }).text()).toContain("history.checkingNextChapter · common.finished · 3h ago");
   });
 
   it("names the chapter by its number, not its list position", () => {
@@ -97,7 +97,7 @@ describe("HistoryRow", () => {
     expect(current).not.toContain("346378");
     next.data = { id: 53, name: "346화", chapterNumber: "5677728", position: 346, isDownloaded: true, contentBytes: 100 } as ChapterListRow;
     const finished = render({ entry: { ...entry, progress: 100 } }).text();
-    expect(finished).toContain('history.nextChapter{"number":"346"} · 3h ago');
+    expect(finished).toContain("Continue Ch. 346 · 3h ago");
     expect(finished).not.toContain("5677728");
   });
 
@@ -162,7 +162,7 @@ describe("HistoryRow actions", () => {
     const nextChapter = { id: 53, position: 53, isDownloaded: true, contentBytes: 100 } as ChapterListRow;
     next.data = nextChapter;
     const finished = { ...entry, progress: 100 };
-    expect(render({ entry: finished }).text()).toContain('history.nextChapter{"number":"53"} · 3h ago');
+    expect(render({ entry: finished }).text()).toContain("Continue Ch. 53 · 3h ago");
     const { row } = await mount(finished);
     (row.props.onClick as () => void)();
     expect(onContinue).toHaveBeenCalledWith(nextChapter);
@@ -172,7 +172,7 @@ describe("HistoryRow actions", () => {
     onContinue.mockClear();
 
     next.data = { id: 53, position: 53, isDownloaded: false, contentBytes: 0 } as ChapterListRow;
-    expect(render({ entry: finished }).text()).toContain("Ch. 52 · common.finished · 3h ago");
+    expect(render({ entry: finished }).text()).toContain("history.viewWork · common.finished · 3h ago");
     const { row: undownloadedRow } = await mount(finished);
     (undownloadedRow.props.onClick as () => void)();
     expect(onContinue).toHaveBeenCalledWith(null);

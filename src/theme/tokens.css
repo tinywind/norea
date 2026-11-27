@@ -2,6 +2,7 @@
   --norea-text-xs: 0.75rem;     /* 12px meta, badges, captions */
   --norea-text-sm: 0.8125rem;   /* 13px secondary text, row meta */
   --norea-text-md: 0.9375rem;   /* 15px body, list titles, inputs */
+  --norea-text-row-title: 1rem;
   --norea-text-lg: 1.0625rem;   /* 17px section titles */
   --norea-text-xl: 1.25rem;     /* 20px page titles (mobile) */
   --norea-text-2xl: 1.5rem;     /* 24px page titles (desktop), novel title */
@@ -36,9 +37,9 @@
   --norea-icon-md: 1.25rem;
   --norea-icon-lg: 1.5rem;
 
-  --norea-duration-fast: 120ms;
-  --norea-duration-base: 200ms;
-  --norea-duration-slow: 320ms;
+  --norea-duration-fast: 60ms;
+  --norea-duration-base: 100ms;
+  --norea-duration-slow: 160ms;
   /* Rotation period of busy spinners; reduced motion keeps it because the spin conveys work in progress. */
   --norea-duration-spin: 900ms;
   --norea-ease-standard: cubic-bezier(0.2, 0, 0, 1);

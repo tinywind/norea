@@ -14,7 +14,7 @@ const location = vi.hoisted(() => ({
   pathname: "/reader",
   search: { chapterId: 11 } as Record<string, unknown>,
 }));
-const taskAttention = vi.hoisted(() => ({ count: 0 }));
+const tasks = vi.hoisted(() => ({ active: 0, failed: 0 }));
 
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
@@ -65,7 +65,7 @@ vi.mock("../lib/system-file-import", () => ({
   importSystemOpenedFile: vi.fn(),
 }));
 vi.mock("../lib/tasks/hooks", () => ({
-  useTaskAttentionCount: () => taskAttention.count,
+  useTaskBadgeCounts: () => tasks,
 }));
 vi.mock("../components/SiteBrowserOverlay", () => ({ SiteBrowserOverlay: () => null }));
 vi.mock("../components/TaskNotifications", () => ({ TaskNotifications: () => null }));
@@ -226,7 +226,8 @@ describe("primary navigation", () => {
 
   afterEach(() => {
     Object.assign(location, readerLocation);
-    taskAttention.count = 0;
+    tasks.active = 0;
+    tasks.failed = 0;
   });
 
   it("offers Library, Browse, Updates, History and More in both navs", () => {
@@ -252,16 +253,17 @@ describe("primary navigation", () => {
     expect(markup).not.toContain("<main");
   });
 
-  it("badges More with active and failed tasks", () => {
-    taskAttention.count = 120;
+  it("prioritizes failed tasks on the More badge", () => {
+    tasks.active = 3;
+    tasks.failed = 120;
     const markup = renderNavigation("/");
     const more = navLinks(markup, "norea-rail-link").find(
       (link) => link.href === "/more",
     );
 
-    expect(more?.label).toBe("More, 120 active or failed tasks");
+    expect(more?.label).toBe("More, 120 failed tasks");
     expect(more?.content).toContain(
-      '<span aria-hidden="true" class="norea-rail-badge">99+</span>',
+      '99+</span>',
     );
     expect(markup.match(/norea-rail-badge/g)).toHaveLength(2);
   });

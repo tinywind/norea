@@ -5,6 +5,7 @@ import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { PageHeader } from "../AppFrame";
 import { IconButton } from "../IconButton";
 import {
+  CategoryIcon,
   CloseIcon,
   RefreshIcon,
   SearchIcon,
@@ -17,6 +18,7 @@ interface LibraryAppBarProps {
   categoryTabs?: ReactNode;
   /** Shows the inline search field in place of the search icon. */
   wide: boolean;
+  onManageCategories: () => void;
   onOpenViewOptions: () => void;
   onRefresh: () => void;
   onSearchChange: (search: string) => void;
@@ -29,6 +31,7 @@ interface LibraryAppBarProps {
 export function LibraryAppBar({
   categoryTabs = null,
   wide,
+  onManageCategories,
   onOpenViewOptions,
   onRefresh,
   onSearchChange,
@@ -62,6 +65,12 @@ export function LibraryAppBar({
     <LibrarySearchField onChange={onSearchChange} value={search} />
   ) : null;
 
+  const manageCategories = (
+    <IconButton label={t("library.manageCategories")} onClick={onManageCategories} size="lg">
+      <CategoryIcon />
+    </IconButton>
+  );
+
   return (
     <PageHeader
       actions={
@@ -84,7 +93,8 @@ export function LibraryAppBar({
             {refreshing ? <Loader size="sm" /> : <RefreshIcon />}
           </IconButton>
           <IconButton
-            label={t("library.viewOptions.title")}
+            aria-haspopup="dialog"
+            label={t("library.viewOptions.display")}
             onClick={onOpenViewOptions}
             size="lg"
           >
@@ -97,7 +107,11 @@ export function LibraryAppBar({
       title={t("nav.library")}
       titleHidden
     >
+      {wide && !categoryTabs ? (
+        <div className="norea-library-category-heading"><span aria-hidden="true">{t("nav.library")}</span>{manageCategories}</div>
+      ) : null}
       {categoryTabs ?? searchField}
+      {categoryTabs ? manageCategories : null}
     </PageHeader>
   );
 }

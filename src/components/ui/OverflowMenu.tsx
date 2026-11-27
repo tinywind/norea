@@ -30,7 +30,7 @@ export function OverflowMenu({ disabled, items, label, trigger }: OverflowMenuPr
     <Menu position="bottom-end" returnFocus withinPortal>
       <Menu.Target>
         {trigger ?? (
-          <IconButton disabled={disabled} label={label} size="lg">
+          <IconButton className="norea-overflow-trigger" disabled={disabled} label={label} size="lg">
             <OverflowIcon />
           </IconButton>
         )}

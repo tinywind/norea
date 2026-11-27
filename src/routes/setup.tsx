@@ -3,10 +3,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { ChipButton } from "../components/ChipButton";
-import { IconButton } from "../components/IconButton";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { addPluginRepository } from "../components/browse/use-plugin-catalog";
-import { DeselectIcon, SelectAllIcon } from "../components/ui/icons";
 import { formatPluginLanguageForLocale, useTranslation } from "../i18n";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
 import { describeError } from "../lib/errors";
@@ -246,22 +244,20 @@ export function SetupPage() {
                   {t("setup.sources.description", { count: suggestions.length })}
                 </Text>
                 <Group gap="xs">
-                  <IconButton
-                    disabled={installSelected.isPending}
-                    label={t("setup.sources.selectAll")}
+                  <Button
+                    disabled={installSelected.isPending || selected.length === suggestions.length}
                     onClick={() => setSelectedIds(new Set(suggestions.map((item) => item.id)))}
-                    size="lg"
+                    variant="subtle"
                   >
-                    <SelectAllIcon />
-                  </IconButton>
-                  <IconButton
-                    disabled={installSelected.isPending}
-                    label={t("setup.sources.clear")}
+                    {t("setup.sources.selectAll")}
+                  </Button>
+                  <Button
+                    disabled={installSelected.isPending || selected.length === 0}
                     onClick={() => setSelectedIds(new Set())}
-                    size="lg"
+                    variant="subtle"
                   >
-                    <DeselectIcon />
-                  </IconButton>
+                    {t("setup.sources.clear")}
+                  </Button>
                 </Group>
                 <Stack className="norea-setup-sources" gap="xs">
                   {suggestions.map((item) => (

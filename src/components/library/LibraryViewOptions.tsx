@@ -179,7 +179,7 @@ export function LibraryViewOptions({
         }}
         value={tab}
       >
-        <Tabs.List grow>
+        <Tabs.List>
           <Tabs.Tab value="filter">{t("library.viewOptions.filter")}</Tabs.Tab>
           <Tabs.Tab value="sort">{t("library.viewOptions.sort")}</Tabs.Tab>
           <Tabs.Tab value="display">{t("library.viewOptions.display")}</Tabs.Tab>

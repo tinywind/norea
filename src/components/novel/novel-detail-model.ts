@@ -326,9 +326,16 @@ export function getChapterReadingProgress(chapter: ChapterListRow): number {
   return Math.max(0, Math.min(100, Math.round(chapter.progress)));
 }
 
-/** How many of the chapters are marked read. */
-export function countReadChapters(chapters: readonly ChapterListRow[]): number {
-  return chapters.reduce((count, chapter) => (chapter.progress >= FINISHED_PROGRESS ? count + 1 : count), 0);
+export function getNovelChapterStats(chapters: readonly ChapterListRow[]) {
+  let downloaded = 0;
+  let unread = 0;
+  let progressSum = 0;
+  for (const chapter of chapters) {
+    if (hasStoredChapterContent(chapter)) downloaded += 1;
+    if (chapter.progress < FINISHED_PROGRESS) unread += 1;
+    progressSum += Math.max(0, Math.min(100, chapter.progress));
+  }
+  return { downloaded, unread, readingProgress: chapters.length ? progressSum / chapters.length : 0 };
 }
 
 export function findFirstChapter(

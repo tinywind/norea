@@ -58,22 +58,17 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* The bar carries the title from the start, so its row is never empty; two lines at the top, one once scrolled. */
 .norea-novel-app-bar .norea-app-bar-title {
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  display: -webkit-box;
-  overflow-wrap: anywhere;
-  white-space: normal;
+  visibility: hidden;
 }
 
 .norea-novel-app-bar[data-title-visible="true"] .norea-app-bar-title {
-  -webkit-line-clamp: 1;
+  visibility: visible;
 }
 
 .norea-novel-frame {
   --norea-page-block: var(--norea-space-3);
-  --norea-page-gutter: clamp(0.75rem, 2vw, 1.5rem);
+  --norea-page-gutter: clamp(1rem, 2vw, 1.5rem);
 }
 
 .norea-novel-layout {
@@ -91,13 +86,16 @@
 }
 
 .norea-novel-identity {
-  align-items: start;
+  align-items: stretch;
   display: grid;
-  gap: var(--norea-space-3);
-  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: var(--norea-space-4);
+  grid-template-columns: min(36%, 9rem) minmax(0, 1fr);
 }
 
 .norea-novel-cover {
+  align-self: start;
+  aspect-ratio: 2 / 3;
+  inline-size: 100%;
   border-radius: var(--norea-radius-sm);
   overflow: hidden;
   position: relative;
@@ -131,46 +129,90 @@
 }
 
 .norea-novel-identity-text {
-  display: flex;
-  flex-direction: column;
-  gap: var(--norea-space-1);
+  /* The cover sets the height; the synopsis takes the space below the fixed information. */
+  contain: size;
+  display: grid;
+  gap: var(--norea-space-2);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
   min-width: 0;
-  position: relative;
 }
 
-/* The page heading for assistive technology; the app bar shows the title on screen. */
+.norea-novel-info-row {
+  align-items: center;
+  column-gap: var(--norea-space-1);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) min(60%, clamp(7rem, 30%, 11rem));
+  font-size: var(--norea-text-sm);
+  line-height: var(--norea-leading-normal);
+}
+
+.norea-novel-category-slot {
+  align-content: center;
+  block-size: var(--norea-control-md);
+  contain: size;
+  min-width: 0;
+}
+
 .norea-novel-title {
-  block-size: 1px;
-  clip-path: inset(50%);
-  inline-size: 1px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-xl);
+  font-weight: var(--norea-weight-bold);
+  letter-spacing: var(--norea-tracking-tight);
+  line-height: var(--norea-leading-tight);
   margin: 0;
-  overflow: hidden;
-  position: absolute;
-  white-space: nowrap;
+  overflow: clip;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
 }
 
 .norea-novel-byline,
 .norea-novel-meta {
   color: var(--norea-color-ink-muted);
-  font-size: var(--norea-text-sm);
+  display: inline-block;
   font-variant-numeric: tabular-nums;
-  line-height: var(--norea-leading-normal);
   margin: 0;
+  margin-inline-end: var(--norea-space-2);
+  max-inline-size: 100%;
   overflow-wrap: anywhere;
+  vertical-align: middle;
+}
+
+.norea-novel-metadata > :last-child {
+  margin-inline-end: 0;
+}
+
+.norea-novel-byline,
+.norea-novel-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .norea-novel-byline {
   color: var(--norea-color-ink);
 }
 
-.norea-novel-offline {
-  align-items: center;
-  display: flex;
-  gap: var(--norea-space-1);
+.norea-novel-status::before {
+  background: var(--norea-color-icon-subtle);
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 0.375rem;
+  margin-inline-end: var(--norea-space-2);
+  vertical-align: middle;
+  width: 0.375rem;
 }
 
-.norea-novel-offline[data-goal-state="attention"] {
-  color: var(--norea-color-warn);
+.norea-novel-reading-status {
+  align-items: center;
+  block-size: max(1lh, 1.25rem);
+  display: flex;
+  grid-column: 1 / -1;
+  min-width: 0;
 }
 
 .norea-novel-check-paused {
@@ -181,12 +223,43 @@
 }
 
 .norea-novel-categories {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-1);
+  justify-content: flex-end;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: end;
+}
+
+.norea-novel-categories > .norea-icon-button {
+  flex: none;
+}
+
+.norea-novel-categories:has(> .norea-novel-category-names) {
+  align-items: flex-start;
+}
+
+.norea-novel-category-names {
+  align-self: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.375rem var(--norea-space-2);
+  font-size: var(--norea-text-sm);
+  gap: 0 var(--norea-space-2);
+  justify-content: flex-end;
   list-style: none;
-  margin: var(--norea-space-2) 0 0;
+  margin: 0;
+  max-block-size: 2lh;
+  min-width: 0;
+  overflow: clip;
   padding: 0;
+}
+
+.norea-novel-category-names li {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .norea-novel-category-sheet .mantine-Checkbox-label {
@@ -203,59 +276,73 @@
   justify-content: space-between;
 }
 
-/* Equal columns, so the secondary actions span the Continue button's width whether two or three show. */
+.norea-novel-hero .mantine-Button-root.norea-novel-continue {
+  height: auto;
+  min-height: max(3rem, var(--norea-control-md));
+  padding-block: var(--norea-space-2);
+}
+
 .norea-novel-actions {
+  border-bottom: 1px solid var(--norea-color-rule);
   display: grid;
-  gap: var(--norea-space-2);
-  grid-auto-columns: minmax(0, 1fr);
-  grid-auto-flow: column;
+  gap: 0 var(--norea-space-1);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 7.5rem), 1fr));
+  margin-block-start: calc(-1 * var(--norea-space-2));
+  padding-block-end: var(--norea-space-1);
 }
 
 .norea-novel-actions .mantine-Button-root {
-  min-width: 0;
-  padding-inline: var(--norea-space-2);
-}
-
-/* Phones and the narrow desktop info pane cannot fit icon and label side by side in a third of the row. */
-@media (max-width: 575px), (min-width: 992px) {
-  .norea-novel-actions .mantine-Button-root {
-    height: auto;
-    padding-block: var(--norea-space-2);
-  }
-
-  .norea-novel-actions .mantine-Button-inner {
-    flex-direction: column;
-    gap: var(--norea-space-1);
-  }
-
-  .norea-novel-actions .mantine-Button-section {
-    margin: 0;
-  }
-}
-
-.norea-novel-summary {
-  display: flex;
-  flex-direction: column;
-  gap: var(--norea-space-2);
-}
-
-.norea-novel-summary-text {
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
   color: var(--norea-color-ink-muted);
-  display: -webkit-box;
-  font-size: var(--norea-text-md);
-  line-height: var(--norea-leading-normal);
-  margin: 0;
-  overflow: hidden;
+  height: auto;
+  min-height: var(--norea-control-md);
+  min-width: 0;
+  padding: var(--norea-space-1);
+}
+
+.norea-novel-actions .mantine-Button-section {
+  margin-inline-end: var(--norea-space-1);
+}
+
+.norea-novel-actions .mantine-Button-label,
+.norea-novel-continue .mantine-Button-label {
+  height: auto;
+  overflow-wrap: anywhere;
+  text-align: center;
   white-space: normal;
 }
 
-.norea-novel-summary-footer {
-  align-items: center;
-  display: flex;
-  gap: var(--norea-space-2);
-  min-width: 0;
+.norea-novel-actions:empty {
+  display: none;
+}
+
+.norea-novel-summary {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+.norea-novel-summary:focus-visible {
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
+  outline-offset: calc(-1 * var(--norea-focus-width));
+}
+
+.norea-novel-summary-text {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-md);
+  line-height: var(--norea-leading-normal);
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.norea-novel-tag-group {
+  margin-block-start: var(--norea-space-2);
+}
+
+.norea-novel-tag-heading {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+  margin: 0 0 var(--norea-space-1);
 }
 
 .norea-novel-genres {
@@ -263,23 +350,9 @@
   flex-wrap: wrap;
   gap: var(--norea-space-2);
   list-style: none;
-  flex: 1 1 auto;
   margin: 0;
   min-width: 0;
-  max-height: 1.75rem;
-  overflow: hidden;
   padding: 0;
-}
-
-.norea-novel-summary[data-expanded="true"] .norea-novel-summary-text {
-  -webkit-line-clamp: unset;
-  display: block;
-  white-space: pre-wrap;
-}
-
-.norea-novel-summary[data-expanded="true"] .norea-novel-genres,
-.norea-novel-genres:focus-within {
-  max-height: none;
 }
 
 .norea-novel-genres > li {
@@ -309,71 +382,28 @@
   outline-offset: calc(-1 * var(--norea-focus-width));
 }
 
-.norea-novel-summary-toggle {
-  align-self: flex-start;
-  flex: 0 0 auto;
-  margin-left: auto;
-}
-
 .norea-novel-info-pane {
   container: novel-info / inline-size;
 }
 
+@container novel-info (max-width: 35.99rem) {
+  .norea-novel-identity-text {
+    gap: var(--norea-space-1);
+  }
+
+  .norea-novel-info-row {
+    line-height: var(--norea-leading-tight);
+  }
+}
+
 @container novel-info (min-width: 36rem) {
-  .norea-novel-hero:has(> .norea-novel-summary) {
-    column-gap: var(--norea-space-4);
-    display: grid;
+  .norea-novel-identity {
     grid-template-columns: clamp(9rem, 22cqi, 10rem) minmax(0, 1fr);
-    grid-template-rows: max-content minmax(4.5rem, 1fr);
-  }
-
-  .norea-novel-hero:has(> .norea-novel-summary) > .norea-novel-identity {
-    display: contents;
-  }
-
-  .norea-novel-hero:has(> .norea-novel-summary) .norea-novel-cover {
-    align-self: start;
-    grid-area: 1 / 1 / 3 / 2;
-  }
-
-  .norea-novel-hero:has(> .norea-novel-summary) .norea-novel-identity-text {
-    grid-area: 1 / 2;
-  }
-
-  .norea-novel-summary {
-    /* The cover sets the available height; long descriptions and tags scroll together. */
-    contain: size;
-    display: block;
-    grid-area: 2 / 2;
-    overflow-y: auto;
-  }
-
-  .norea-novel-summary-text {
-    -webkit-line-clamp: unset;
-    display: block;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-  }
-
-  .norea-novel-summary-footer {
-    margin-top: var(--norea-space-2);
-  }
-
-  .norea-novel-genres {
-    max-height: none;
-  }
-
-  .norea-novel-summary-toggle {
-    display: none;
-  }
-
-  .norea-novel-continue,
-  .norea-novel-actions {
-    grid-column: 1 / -1;
   }
 }
 
 .norea-novel-chapters {
+  container: novel-chapters / inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -432,6 +462,19 @@
   min-width: 0;
 }
 
+@container novel-chapters (max-width: 36rem) {
+  .norea-novel-chapters-header {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    padding-block: var(--norea-space-1);
+  }
+
+  .norea-novel-chapters-title {
+    flex: 0 0 100%;
+    word-break: keep-all;
+  }
+}
+
 .norea-novel-chapter-list {
   position: relative;
 }
@@ -450,7 +493,7 @@
     grid-template-columns: 20rem minmax(0, 1fr);
   }
 
-  /* The info pane stays in view and scrolls on its own once the summary expands. */
+  /* Keep the work information in view beside its chapter list. */
   .norea-novel-info-pane {
     max-height: calc(var(--norea-app-content-height) - var(--norea-app-bar-height) - var(--norea-space-4));
     overflow-y: auto;
@@ -460,11 +503,7 @@
   }
 
   .norea-novel-identity {
-    grid-template-columns: 1fr;
-  }
-
-  .norea-novel-cover {
-    width: 11rem;
+    grid-template-columns: min(36%, 8rem) minmax(0, 1fr);
   }
 }
 
@@ -785,11 +824,6 @@
 .norea-novel-chapter-drag-handle {
   cursor: grab;
   touch-action: none;
-}
-
-.norea-novel-chapter-sort-button[data-active="true"] {
-  background: var(--norea-color-accent-soft);
-  color: var(--norea-color-ink);
 }
 
 .norea-novel-chapter-sort-button svg {

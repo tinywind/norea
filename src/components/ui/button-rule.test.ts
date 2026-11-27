@@ -236,25 +236,21 @@ const ACTION_ICONS: Record<string, string> = {
   "common.refresh": "RefreshIcon",
   "common.retry": "RetryIcon",
   "common.settings": "SettingsIcon",
-  "reader.settingsShort": "ReaderSettingsIcon",
+  "reader.openSettings": "ReaderSettingsIcon",
   "contentSync.browse": "BrowseIcon",
-  "contentSync.rescan": "RescanIcon",
-  "contentSync.syncNow": "SyncIcon",
   "userState.syncNow": "SyncIcon",
   "userState.reconnectAfterRestore": "ConnectIcon",
   "downloads.deleteAll": "TrashIcon",
   "downloads.deleteChapter": "TrashIcon",
   "downloads.refresh": "RefreshIcon",
-  "library.deleteSelectedDownloads": "TrashIcon",
+  "downloads.deleteSelected": "TrashIcon",
   "library.manageCategories": "CategoryIcon",
-  "library.refresh": "RefreshIcon",
   "library.selection.categories": "CategoryIcon",
+  "library.refresh": "RefreshIcon",
   "library.selection.download": "DownloadIcon",
   "library.selection.start": "SelectIcon",
   "library.settings.title": "SettingsIcon",
-  "librarySettings.defaultChapterSort": "SortIcon",
   "novel.checkNewChapters": "RefreshIcon",
-  "novel.deleteDownload": "TrashIcon",
   "novel.download": "DownloadIcon",
   "novel.downloadChapter": "DownloadIcon",
   "novel.filter.open": "FilterIcon",
@@ -268,19 +264,13 @@ const ACTION_ICONS: Record<string, string> = {
   "settings.about.update.check": "RefreshIcon",
   "settings.about.update.install": "DownloadIcon",
   "settings.data.downloadedContent.button": "TrashIcon",
-  "settings.data.exportBackup": "ExportIcon",
-  "settings.data.importBackup": "ImportIcon",
-  "settings.data.libraryMembership.button": "TrashIcon",
   "settings.data.pluginVpn.connection.connect": "ConnectIcon",
   "settings.data.pluginVpn.saved.manage": "SettingsIcon",
   "settings.data.pluginVpn.saved.reallow": "RestartIcon",
   "settings.data.pluginVpn.saved.reallowAll": "RestartIcon",
   "settings.data.pluginVpn.tested.approveAll": "PreferIcon",
-  "settings.data.readingProgress.button": "TrashIcon",
-  "settings.data.updatesQueue.button": "TrashIcon",
   "settings.data.webViewCache.button": "TrashIcon",
   "source.filters": "FilterIcon",
-  "source.sourceSettings": "SettingsIcon",
   "storageSetup.selectExternalFolder": "FolderIcon",
   "storageSetup.selectFolder": "FolderIcon",
   "tasks.sort": "SortIcon",
@@ -299,6 +289,27 @@ describe("D10 same action, same icon", () => {
     expect(offenders).toEqual([]);
     const seen = new Set(actions.flatMap((entry) => entry.keys));
     expect(Object.keys(ACTION_ICONS).filter((key) => !seen.has(key))).toEqual([]);
+  });
+
+  it("uses the sort icon for the default chapter order menu", () => {
+    const sortControl = sources.find(({ name }) => name.endsWith("/NovelActions.tsx"));
+    expect(sortControl?.source).toContain('t("librarySettings.defaultChapterSort")');
+    expect(sortControl?.source).toMatch(/data-sort-direction=[^>]+>\s*<SortIcon/);
+  });
+
+  it("keeps named text commands free of redundant icons", () => {
+    const textOnly = new Set([
+      "novel.deleteDownload",
+      "source.sourceSettings",
+      "contentSync.rescan",
+      "contentSync.syncNow",
+      "settings.data.exportBackup",
+      "settings.data.importBackup",
+      "settings.data.libraryMembership.button",
+      "settings.data.readingProgress.button",
+      "settings.data.updatesQueue.button",
+    ]);
+    expect(actions.filter(entry => entry.keys.some(key => textOnly.has(key)))).toEqual([]);
   });
 
   it("never pairs one label with two different icons", () => {

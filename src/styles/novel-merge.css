@@ -614,9 +614,12 @@
     font-size: var(--norea-text-md);
   }
 
-  .norea-compose-intro p,
-  .norea-compose-link-help {
+  .norea-compose-intro p {
     display: none;
+  }
+
+  .norea-compose-link-help {
+    flex-basis: 100%;
   }
 
   .norea-compose-pane-header {

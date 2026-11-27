@@ -4,6 +4,7 @@
 }
 
 .norea-reader-shell {
+  container: reader-shell / inline-size;
   background: var(--norea-reader-bg, var(--norea-color-bg));
   box-sizing: border-box;
   color: var(--norea-reader-ink, var(--norea-color-ink));
@@ -41,9 +42,8 @@
   align-items: center;
   border-top: 1px solid var(--norea-reader-rule, var(--norea-color-rule));
   display: grid;
-  /* One row at every width: a separate progress row would cost a whole bar of content. */
-  grid-template-areas: "previous seek next chapters settings";
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-areas: "previous seek next chapters";
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   justify-items: center;
 }
 
@@ -109,8 +109,26 @@
   grid-area: chapters;
 }
 
-.norea-reader-bottombar-settings {
-  grid-area: settings;
+.norea-reader-history-status,
+.norea-reader-history-label {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--norea-space-2);
+}
+
+.norea-reader-history-status {
+  color: var(--norea-reader-ink-muted, var(--norea-color-ink-muted));
+}
+
+@container reader-shell (max-width: 21rem) {
+  .norea-reader-bottombar {
+    grid-template-areas: "seek seek seek" "previous next chapters";
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+
+  .norea-reader-body {
+    --norea-reader-footer-height: calc(var(--norea-reader-bar-height) + var(--norea-control-sm) + var(--norea-space-1));
+  }
 }
 
 .norea-reader-seek-slot {
@@ -470,7 +488,7 @@
 
 /* Full-page mode floats the bottom bar over the content; stay above it. */
 .norea-reader-shell[data-full-page="true"] .norea-reader-end-card {
-  bottom: calc(var(--norea-reader-bar-height) + var(--norea-space-3));
+  bottom: calc(var(--norea-reader-footer-height, var(--norea-reader-bar-height)) + var(--norea-space-3));
 }
 
 .norea-reader-content-stage,
@@ -725,7 +743,10 @@
   bottom: var(--norea-space-3);
   box-shadow: var(--norea-shadow-floating);
   display: flex;
+  flex-wrap: wrap;
   gap: var(--norea-space-1);
+  justify-content: center;
+  max-inline-size: calc(100% - 2 * var(--norea-space-3));
   padding: var(--norea-space-1);
   position: absolute;
   right: var(--norea-space-3);
@@ -733,7 +754,14 @@
 }
 
 .norea-reader-shell[data-full-page="true"] .norea-pdf-reader-zoom {
-  bottom: calc(var(--norea-reader-bar-height) + var(--norea-space-3));
+  bottom: calc(var(--norea-reader-footer-height, var(--norea-reader-bar-height)) + var(--norea-space-3));
+}
+
+.norea-pdf-reader-zoom-value {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
+  padding-inline: var(--norea-space-1);
 }
 
 .norea-pdf-reader-zoom-level {

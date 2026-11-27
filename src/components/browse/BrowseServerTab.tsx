@@ -1,3 +1,4 @@
+import { formatUserCategoryName } from "../UserCategoryName";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button, Loader } from "@mantine/core";
@@ -17,6 +18,7 @@ import { ContentServerCover } from "../ContentServerCover";
 import { IconButton } from "../IconButton";
 import { SearchBar } from "../SearchBar";
 import { AddToLibraryIcon, CheckIcon, DownloadIcon, InLibraryIcon, RefreshIcon, SelectIcon, TrashIcon } from "../ui/icons";
+import { OverflowMenu } from "../ui/OverflowMenu";
 import { SelectionAction, SelectionBar } from "../ui/SelectionBar";
 import { CoverGridSkeleton } from "./CoverGridSkeleton";
 import { QuickAddCard } from "./QuickAddCard";
@@ -116,6 +118,11 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
     ? t("serverLibraryAdd.gathering", { loaded: selection.gathering.loaded, total: selection.gathering.total })
     : t("serverLibraryAdd.selectionHint");
 
+  const addAllMatching = {
+    label: t("serverLibraryAdd.addAll", { count: matchingTotal }),
+    disabled: !enabled || matchingTotal === 0,
+    onClick: () => bulkAdd.request({ count: matchingTotal, works: filter }),
+  };
   const selectedWorks = [...selection.selected.values()];
   const newWorks = selectedWorks.filter(work => !isInLibrary(work.identity.pluginId, work.identity.novelPath));
   const downloadAll = () => {
@@ -194,14 +201,12 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
             <IconButton disabled={!enabled || items.length === 0} label={t("library.selection.start")} onClick={() => selection.enter()} size="lg">
               <SelectIcon />
             </IconButton>
-            <IconButton
-              disabled={!enabled || matchingTotal === 0}
-              label={t("serverLibraryAdd.addAll", { count: matchingTotal })}
-              onClick={() => bulkAdd.request({ count: matchingTotal, works: filter })}
-              size="lg"
-            >
-              <AddToLibraryIcon />
-            </IconButton>
+            <Button className="norea-server-add-wide" disabled={addAllMatching.disabled} onClick={addAllMatching.onClick} variant="default">
+              {addAllMatching.label}
+            </Button>
+            <div className="norea-server-add-compact">
+              <OverflowMenu items={[addAllMatching]} label={t("common.more")} />
+            </div>
           </div>
         </div>
       )}
@@ -227,7 +232,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
           const inLibrary = isInLibrary(work.identity.pluginId, work.identity.novelPath);
           const target: QuickAddTarget = { kind: "server", server, work };
           const selected = selection.selected.has(work.id);
-          const categories = categoriesOf(work.identity.pluginId, work.identity.novelPath).join(", ");
+          const categories = categoriesOf(work.identity.pluginId, work.identity.novelPath).map(formatUserCategoryName).join(", ");
           const content = (
             <>
               <span className="norea-source-cover-frame">
@@ -242,7 +247,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
               <span className="norea-source-card-title" title={work.novel.name}>{work.novel.name}</span>
               <span className="norea-source-card-meta">{t("contentSync.catalogCount", { count: work.chapterCount })}</span>
               {categories ? (
-                <span aria-label={`${t("categories.title")}: ${categories}`} className="norea-source-card-categories" title={categories}>
+                <span aria-label={`${t("categories.title")}: ${categories}`} className="norea-source-card-categories norea-user-category-name" title={categories}>
                   {categories}
                 </span>
               ) : null}

@@ -14,7 +14,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Loader, Skeleton, VisuallyHidden } from "@mantine/core";
+import { Skeleton, VisuallyHidden } from "@mantine/core";
 import {
   type CSSProperties,
   useEffect,
@@ -42,7 +42,6 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
-  TrashIcon,
   DownloadedIcon,
   DownloadIcon,
   DragIcon,
@@ -288,42 +287,20 @@ function ChapterListItem({
         </IconButton>
       );
     }
-    if (chapter.isDownloaded) {
-      if (!canDeleteDownload) return null;
+    if (chapter.isDownloaded || effectiveStatus?.kind === "done") {
       return (
-        <OverflowMenu
-          items={[{
-            danger: true,
-            disabled: deleteBusy,
-            icon: TrashIcon,
-            label: t("novel.deleteDownload"),
-            onClick: onDeleteDownload,
-          }]}
-          label={t("novel.downloaded")}
-          trigger={
-            <IconButton
-              className="norea-novel-chapter-state-button"
-              data-state="downloaded"
+        <>
+          <span aria-label={t("novel.downloaded")} className="norea-novel-chapter-progress-slot norea-novel-chapter-state-button" data-state="downloaded" role="img">
+            <DownloadedIcon size="1.25rem" />
+          </span>
+          {chapter.isDownloaded && canDeleteDownload ? (
+            <OverflowMenu
               disabled={deleteBusy}
-              label={t("novel.downloaded")}
-              size="lg"
-            >
-              {deleteBusy ? <Loader size="xs" /> : <DownloadedIcon size="1.25rem" />}
-            </IconButton>
-          }
-        />
-      );
-    }
-    if (effectiveStatus?.kind === "done") {
-      return (
-        <span
-          aria-label={t("novel.downloaded")}
-          className="norea-novel-chapter-progress-slot norea-novel-chapter-state-button"
-          data-state="downloaded"
-          role="img"
-        >
-          <DownloadedIcon size="1.25rem" />
-        </span>
+              items={[{ danger: true, label: t("novel.deleteDownload"), onClick: onDeleteDownload }]}
+              label={t("novel.chapterMore", { name: chapter.name })}
+            />
+          ) : null}
+        </>
       );
     }
     return (

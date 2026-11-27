@@ -53,7 +53,7 @@ describe("UpdateRow", () => {
     const buttons = $("button").toArray().map((button) => $(button).attr("aria-label") ?? $(button).text());
     expect(buttons).toEqual([
       'updates.openNovel{"name":"Novel A"}',
-      "Novel AThe ReturnSource Foo · 2h ago",
+      "Novel AThe Return · Source Foo · 2h ago",
       "novel.downloadChapter",
       "updates.openNovelAction",
     ]);
@@ -88,7 +88,6 @@ it("collapses a run into one row that names the count and toggles its chapters",
   const props = {
     count: 8,
     earliest: entry,
-    onOpenEarliest: vi.fn(),
     onOpenNovel: vi.fn(),
     onToggle: vi.fn(),
   };
@@ -96,7 +95,7 @@ it("collapses a run into one row that names the count and toggles its chapters",
   expect(collapsed.text()).toContain('updates.runTitle{"count":8,"name":"Novel A"}');
   expect(collapsed("button[aria-expanded]").attr("aria-expanded")).toBe("false");
   expect(collapsed("button button")).toHaveLength(0);
-  expect(render(<UpdateRunRow {...props} expanded />)("button[aria-expanded]").attr("aria-label")).toBe(
-    'updates.collapseRun{"name":"Novel A"}',
-  );
+  const expanded = render(<UpdateRunRow {...props} expanded />)("button[aria-expanded]");
+  expect(expanded.attr("aria-expanded")).toBe("true");
+  expect(expanded.text()).toContain('updates.runTitle{"count":8,"name":"Novel A"}');
 });

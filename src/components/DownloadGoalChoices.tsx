@@ -35,7 +35,7 @@ export function DownloadGoalChoices({ current, disabled, onChoose }: DownloadGoa
       {choiceRow({ kind: "none" }, t("downloadGoals.kind.none"), t("downloadGoals.kind.none.description"))}
       {choiceRow({ kind: "keep_ahead", count: shownKeepAheadCount }, t("downloadGoals.kind.keepAhead"),
         t("downloadGoals.kind.keepAhead.description", { count: shownKeepAheadCount }))}
-      <SegmentedToggle
+      {current.kind === "keep_ahead" ? <SegmentedToggle
         aria-label={t("downloadGoals.kind.keepAhead.countLabel")}
         className="norea-download-goal-count norea-download-goal-count--automatic"
         fullWidth
@@ -47,7 +47,7 @@ export function DownloadGoalChoices({ current, disabled, onChoose }: DownloadGoa
           onChoose({ kind: "keep_ahead", count });
         }}
         value={String(shownKeepAheadCount)}
-      />
+      /> : null}
       {choiceRow({ kind: "all_remaining" }, t("downloadGoals.kind.allRemaining"), t("downloadGoals.kind.allRemaining.many"))}
       {choiceRow({ kind: "entire" }, t("downloadGoals.kind.entire"), t("downloadGoals.kind.entire.many"))}
     </Stack>

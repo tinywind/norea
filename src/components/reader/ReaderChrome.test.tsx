@@ -35,7 +35,7 @@ const focusHandlers = { onFocus: vi.fn(), onBlur: vi.fn() };
 function topBar(overrides: Partial<Parameters<typeof ReaderTopBar>[0]> = {}) {
   return elements(ReaderTopBar({
     bookmarked: false, bookmarkDisabled: false, bookmarkLoading: false, chapterName: "Chapter three",
-    focusHandlers, incognitoMode: false, novelName: "The Work", onBack: vi.fn(), onIncognitoModeChange: vi.fn(),
+    focusHandlers, incognitoMode: false, novelName: "The Work", onBack: vi.fn(),
     onOpenSettings: vi.fn(), onRepairMedia: vi.fn(), onToggleBookmark: vi.fn(), repairMediaAttention: false,
     repairMediaDisabled: false, repairMediaLoading: false, settingsOpen: false, showMediaRepair: false,
     ...overrides,
@@ -62,12 +62,10 @@ it("falls back to the chapter name alone without a novel name", () => {
   expect(withClass(tree, "norea-reader-subtitle")).toBeUndefined();
 });
 
-it.each([false, true])("toggles paused history directly and reports its current state: %s", (incognitoMode) => {
-  const onIncognitoModeChange = vi.fn();
-  const toggle = withLabel(topBar({ incognitoMode, onIncognitoModeChange }), "more.pauseHistory")[0]!;
-  expect(toggle.props["aria-pressed"]).toBe(incognitoMode);
-  toggle.props.onClick!();
-  expect(onIncognitoModeChange).toHaveBeenCalledWith(!incognitoMode);
+it("shows the paused-history indicator only while timestamps are paused", () => {
+  expect(withLabel(topBar(), "reader.historyPaused")).toHaveLength(0);
+  const indicator = withLabel(topBar({ incognitoMode: true }), "reader.historyPaused")[0]!;
+  expect(indicator.props.onClick).toBeUndefined();
 });
 
 it("shows the repair button only while chapter media needs repair", () => {
@@ -105,45 +103,41 @@ it.each([
   const onPreviousChapter = vi.fn();
   const onNextChapter = vi.fn();
   const onOpenChapters = vi.fn();
-  const onOpenSettings = vi.fn();
   const seekSlotRef = vi.fn();
   const footer = ReaderBottomBar({
-    ...state, focusHandlers, onNextChapter, onOpenChapters, onOpenSettings, onPreviousChapter, seekSlotRef,
+    ...state, focusHandlers, onNextChapter, onOpenChapters, onPreviousChapter, seekSlotRef,
   });
   const tree = elements(footer);
   const previous = withLabel(tree, "reader.previousChapter")[0]!;
   const next = withLabel(tree, "reader.nextChapter")[0]!;
   const chapters = withLabel(tree, "reader.chapters")[0]!;
-  const settings = withLabel(tree, "reader.openSettings")[0]!;
+  expect(withLabel(tree, "reader.openSettings")).toHaveLength(0);
 
   expect(previous.props.children).toBe("reader.previousShort");
   expect(next.props.children).toBe("reader.nextShort");
   expect(chapters.props.children).toBe("reader.chapters");
-  expect(settings.props.children).toBe("reader.settingsShort");
   expect(previous.props.disabled).toBe(!state.hasPreviousChapter);
   expect(next.props.disabled).toBe(!state.hasNextChapter);
   expect(chapters.props["aria-expanded"]).toBe(state.chapterListExpanded);
   expect(chapters.props["data-active"]).toBe(state.chapterListExpanded || undefined);
-  expect(settings.props["aria-expanded"]).toBe(state.settingsOpen);
-  expect(settings.props["data-active"]).toBe(state.settingsOpen || undefined);
+  expect(withLabel(topBar({ settingsOpen: state.settingsOpen }), "reader.openSettings")[0]!.props["aria-expanded"]).toBe(state.settingsOpen);
   expect(previous.props.onClick).toBe(onPreviousChapter);
   expect(next.props.onClick).toBe(onNextChapter);
   expect(chapters.props.onClick).toBe(onOpenChapters);
-  expect(settings.props.onClick).toBe(onOpenSettings);
   expect(footer.props.onFocus).toBe(focusHandlers.onFocus);
   expect(footer.props.onBlur).toBe(focusHandlers.onBlur);
   expect(footer.props.children[1].props.ref).toBe(seekSlotRef);
   expect(footer.props.children.map((child: ReactElement<ElementProps>) =>
     child.props["aria-label"] ?? child.props.className,
   )).toEqual([
-    "reader.previousChapter", "norea-reader-seek-slot", "reader.nextChapter", "reader.chapters", "reader.openSettings",
+    "reader.previousChapter", "norea-reader-seek-slot", "reader.nextChapter", "reader.chapters",
   ]);
 });
 
 it("centers the bottom bar position label when no horizontal seekbar shares its slot", () => {
   const css = readFileSync(new URL("../../styles/reader.css", import.meta.url), "utf8");
   expect(css).toMatch(/\.norea-reader-seek-label:only-child \{\s*margin-inline: auto;/);
-  expect(css).toContain('grid-template-areas: "previous seek next chapters settings";');
+  expect(css).toContain('grid-template-areas: "previous seek next chapters";');
   expect(css).toMatch(/\.norea-reader-footer-action\.mantine-Button-root \{[^}]*min-height: var\(--norea-control-md\);[^}]*min-width: var\(--norea-control-md\);/);
   expect(css).toMatch(/\.norea-reader-footer-action \.mantine-Button-inner \{\s*flex-direction: column;/);
 });

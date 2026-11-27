@@ -46,8 +46,6 @@ import { useConfirm } from "../components/ui/ConfirmDialog";
 import {
   ChevronRightIcon,
   DownloadIcon,
-  GithubIcon,
-  ImportIcon,
   PlusIcon,
   RepositoryIcon,
   RetryIcon,
@@ -584,7 +582,7 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
     const confirmed = await confirm({
       title: t("browse.removeRepositoryConfirm.title"),
       message: t("browse.removeRepositoryConfirm.message", { url: target.url }),
-      confirmLabel: t("common.remove"),
+      confirmLabel: t("extensions.repositories.remove"),
       danger: true,
     });
     if (confirmed) removeRepositoryMutation.mutate(target.id);
@@ -604,12 +602,13 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
     <div className="norea-extensions-page">
       <PageHeader
         actions={
-          <>
-            <IconButton
-              disabled={installFromFile.isPending}
-              label={t("extensions.installFromFile")}
-              loading={installFromFile.isPending}
-              onClick={() => {
+          <OverflowMenu
+            label={t("browse.addSource")}
+            items={[
+              { label: t("browse.sourceInstance.title"), disabled: !githubSourceTemplate, onClick: () => {
+                if (githubSourceTemplate) openSourceForm(githubSourceTemplate);
+              } },
+              { label: t("extensions.installFromFile"), disabled: installFromFile.isPending, onClick: () => {
                 void pickLocalFiles({
                   extensions: ["js"],
                   filterName: "JavaScript",
@@ -623,22 +622,9 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
                     showSettingsToast("danger", describeError(error));
                   },
                 );
-              }}
-              size="lg"
-            >
-              <ImportIcon />
-            </IconButton>
-            <IconButton
-              disabled={githubSourceTemplate === null}
-              label={t("browse.sourceInstance.title")}
-              onClick={() => {
-                if (githubSourceTemplate) openSourceForm(githubSourceTemplate);
-              }}
-              size="lg"
-            >
-              <GithubIcon />
-            </IconButton>
-          </>
+              } },
+            ]}
+          />
         }
         onBack={goBack}
         title={t("extensions.title")}

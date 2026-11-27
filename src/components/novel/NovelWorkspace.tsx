@@ -1,35 +1,28 @@
 import { Button, Loader, Skeleton } from "@mantine/core";
 import {
-  useEffect,
   useId,
   useMemo,
-  useRef,
   useState,
   type ReactNode,
   type Ref,
 } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import { type NovelDetailRecord } from "../../db/queries/novel";
-import { useTranslation, type TranslationKey } from "../../i18n";
+import { useTranslation } from "../../i18n";
 import type { DownloadGoalOfflineState } from "../../lib/download-goals/goal-offline-state";
 import { pluginManager } from "../../lib/plugins/manager";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
 import { useNovelCoverSource } from "../../lib/use-novel-cover-source";
+import { ChapterCountBadges, CoverReadingProgress } from "../ChapterCountBadges";
 import { ConsoleCover } from "../ConsolePrimitives";
-import { IconButton } from "../IconButton";
 import {
   AddToLibraryIcon,
-  ChevronDownIcon,
-  ChevronUpIcon,
-  DownloadedIcon,
   DownloadIcon,
   FromStartIcon,
-  InLibraryIcon,
   PlayIcon,
-  WarningIcon,
 } from "../ui/icons";
 import {
-  countReadChapters,
+  type getNovelChapterStats,
   findContinueReadingTarget,
   findFirstChapter,
   formatChapterNumber,
@@ -42,9 +35,10 @@ import { NovelDownloadSheet } from "./NovelActions";
 interface NovelWorkspaceProps {
   allowSourceAccess: boolean;
   hasServerSource?: boolean;
-  /** Category chips, shown under the title while the novel is in the library. */
+  /** Assigned categories and their edit action, shown under the title. */
   categoryChips?: ReactNode;
   chapters: ChapterListRow[];
+  chapterStats: ReturnType<typeof getNovelChapterStats> | undefined;
   /** Shown over the cover while the source is checked for new chapters. */
   checkingNewChapters?: boolean;
   downloadStatuses: ReadonlyMap<number, ChapterDownloadStatus>;
@@ -62,14 +56,6 @@ interface NovelWorkspaceProps {
   titleRef?: Ref<HTMLHeadingElement>;
 }
 
-const OFFLINE_STATE_LABELS: Record<DownloadGoalOfflineState, TranslationKey> = {
-  ready: "novel.offline.ready",
-  downloading: "novel.offline.downloading",
-  attention: "novel.offline.attention",
-};
-
-const OFFLINE_STATE_ICONS = { ready: DownloadedIcon, downloading: DownloadIcon, attention: WarningIcon };
-
 /**
  * The novel's header zone: cover, identity, the Continue action, the library,
  * download and from-start actions, and the clamped summary with genres.
@@ -79,6 +65,7 @@ export function NovelWorkspace({
   hasServerSource = false,
   categoryChips,
   chapters,
+  chapterStats,
   checkingNewChapters = false,
   downloadStatuses,
   lastReadChapterId,
@@ -110,20 +97,20 @@ export function NovelWorkspace({
     [chapters, lastReadChapterId],
   );
   const hasHistory = hasReadingHistory(chapters, lastReadChapterId);
-  const readCount = useMemo(() => countReadChapters(chapters), [chapters]);
+  const continuesAtStart = continueReadingTarget?.chapter.id === firstChapter?.id &&
+    (continueReadingTarget?.fromStart || firstChapter?.progress === 0);
   const statusLabel = novelStatusLabel(novel.status, t, novel.statusOverride);
   const byline = [
     novel.author,
     novel.artist && novel.artist !== novel.author ? novel.artist : null,
   ].filter(Boolean).join(" · ");
-  const meta = [statusLabel, sourceName].filter(Boolean).join(" · ");
-  const OfflineIcon = offlineState ? OFFLINE_STATE_ICONS[offlineState] : null;
 
   return (
     <section aria-labelledby={titleId} className="norea-novel-hero">
       <div className="norea-novel-identity">
         <div className="norea-novel-cover">
           <ConsoleCover alt={novel.name} height="auto" src={coverSource} width="100%" />
+          {chapterStats ? <CoverReadingProgress progress={chapterStats.readingProgress} /> : null}
           {checkingNewChapters ? (
             <p className="norea-novel-cover-status" role="status">
               <Loader aria-hidden="true" color="currentColor" size={14} />
@@ -135,20 +122,20 @@ export function NovelWorkspace({
           <h1 className="norea-novel-title" id={titleId} ref={titleRef} title={novel.name}>
             {novel.name}
           </h1>
-          {byline ? <p className="norea-novel-byline">{byline}</p> : null}
-          <p className="norea-novel-meta">{meta}</p>
-          {readCount > 0 ? (
-            <p className="norea-novel-meta">
-              {t("novel.chaptersRead", { read: readCount, total: chapters.length })}
-            </p>
-          ) : null}
-          {offlineState && OfflineIcon ? (
-            <p className="norea-novel-meta norea-novel-offline" data-goal-state={offlineState}>
-              <OfflineIcon size="1rem" />
-              {t(OFFLINE_STATE_LABELS[offlineState])}
-            </p>
-          ) : null}
-          {categoryChips}
+          <div className="norea-novel-info-row">
+            <div className="norea-novel-metadata">
+              {byline ? <p className="norea-novel-byline" title={byline}>{byline}</p> : null}
+              {sourceName ? <p className="norea-novel-meta norea-novel-source" title={sourceName}>{sourceName}</p> : null}
+              {statusLabel ? <p className="norea-novel-meta norea-novel-status">{statusLabel}</p> : null}
+            </div>
+            <div className="norea-novel-category-slot">{categoryChips}</div>
+            <div className="norea-novel-reading-status">
+              {chapterStats ? (
+                <ChapterCountBadges downloaded={chapterStats.downloaded} unread={chapterStats.unread} offlineState={offlineState} />
+              ) : null}
+            </div>
+          </div>
+          <NovelSummary genres={genres} onSelectGenre={onSelectGenre} summary={novel.summary} />
         </div>
       </div>
 
@@ -178,42 +165,35 @@ export function NovelWorkspace({
       </Button>
 
       <div className="norea-novel-actions">
-        <Button
-          aria-pressed={novel.inLibrary}
-          leftSection={
-            novel.inLibrary ? (
-              <InLibraryIcon size="1.125rem" />
-            ) : (
-              <AddToLibraryIcon size="1.125rem" />
-            )
-          }
-          loading={libraryBusy}
-          onClick={onToggleLibrary}
-          variant={novel.inLibrary ? "light" : "default"}
-        >
-          {novel.inLibrary ? t("novel.inLibraryAction") : t("novel.addToLibrary")}
-        </Button>
+        {novel.inLibrary ? null : (
+          <Button
+            leftSection={<AddToLibraryIcon size="1.125rem" />}
+            loading={libraryBusy}
+            onClick={onToggleLibrary}
+            variant="subtle"
+          >
+            {t("novel.addToLibrary")}
+          </Button>
+        )}
         {novel.isLocal ? null : (
           <Button
             leftSection={<DownloadIcon size="1.125rem" />}
             onClick={() => setDownloadSheetOpen(true)}
-            variant="default"
+            variant="subtle"
           >
             {t("novel.download")}
           </Button>
         )}
-        {hasHistory && firstChapter ? (
+        {hasHistory && firstChapter && !continuesAtStart ? (
           <Button
             leftSection={<FromStartIcon size="1.125rem" />}
             onClick={() => onRead(firstChapter, { fromStart: true })}
-            variant="default"
+            variant="subtle"
           >
             {t("novel.fromStart")}
           </Button>
         ) : null}
       </div>
-
-      <NovelSummary genres={genres} onSelectGenre={onSelectGenre} summary={novel.summary} />
 
       {novel.isLocal ? null : (
         <NovelDownloadSheet
@@ -240,54 +220,21 @@ function NovelSummary({
   summary: string | null;
 }) {
   const { t } = useTranslation();
-  const contentId = useId();
-  const genresId = useId();
-  const textRef = useRef<HTMLParagraphElement>(null);
-  const genresRef = useRef<HTMLUListElement>(null);
-  const [expanded, setExpanded] = useState(false);
-  const [overflowing, setOverflowing] = useState(false);
-
-  useEffect(() => {
-    if (expanded) return;
-    const measure = () => {
-      const overflows = (element: HTMLElement | null) =>
-        element !== null && element.scrollHeight > element.clientHeight + 1;
-      setOverflowing(overflows(textRef.current) || overflows(genresRef.current));
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    if (textRef.current) observer.observe(textRef.current);
-    if (genresRef.current) observer.observe(genresRef.current);
-    return () => observer.disconnect();
-  }, [expanded, genres, summary]);
-
   return (
-    <div className="norea-novel-summary" data-expanded={expanded ? "true" : undefined}>
-      <p className="norea-novel-summary-text" id={contentId} ref={textRef}>
-        {summary || t("novel.noSummary")}
-      </p>
-      {genres.length > 0 || overflowing || expanded ? (
-        <div className="norea-novel-summary-footer">
-          {genres.length > 0 ? (
-            <ul aria-label={t("library.tags.title")} className="norea-novel-genres" id={genresId} ref={genresRef}>
-              {genres.map(genre => (
-                <li key={genre}>
-                  <button className="norea-novel-genre" onClick={() => onSelectGenre(genre)} type="button">
-                    {genre}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {overflowing || expanded ? (
-            <IconButton aria-controls={genres.length > 0 ? `${contentId} ${genresId}` : contentId}
-              aria-expanded={expanded} className="norea-novel-summary-toggle"
-              label={expanded ? t("novel.summaryLess") : t("novel.summaryMore")}
-              onClick={() => setExpanded(current => !current)} size="lg">
-              {expanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
-            </IconButton>
-          ) : null}
+    <div aria-label={t("library.localNovel.summary")} className="norea-novel-summary" role="region" tabIndex={0}>
+      <p className="norea-novel-summary-text">{summary || t("novel.noSummary")}</p>
+      {genres.length > 0 ? (
+        <div className="norea-novel-tag-group">
+          <p className="norea-novel-tag-heading">{t("novel.libraryTags")}</p>
+          <ul aria-label={t("library.tags.title")} className="norea-novel-genres">
+            {genres.map(genre => (
+              <li key={genre}>
+                <button className="norea-novel-genre" onClick={() => onSelectGenre(genre)} type="button">
+                  {genre}
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
     </div>
@@ -308,7 +255,7 @@ export function NovelHeroSkeleton() {
           <Skeleton height="0.875rem" radius="sm" width="40%" />
         </div>
       </div>
-      <Skeleton height="2.75rem" radius="sm" />
+      <Skeleton height="3rem" radius="sm" />
       <Skeleton height="0.875rem" radius="sm" />
       <Skeleton height="0.875rem" radius="sm" width="70%" />
     </div>

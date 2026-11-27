@@ -20,6 +20,8 @@ import {
   mountBackNavigationHarness,
   type BackNavigationHarness,
 } from "../../lib/android-back-navigation.test-support";
+import { ChipButton } from "../ChipButton";
+import { UserCategoryName } from "../UserCategoryName";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import { ServerBrowseFilters, type ServerBrowseFilterSelection } from "./ServerBrowseFilters";
 
@@ -69,7 +71,13 @@ async function render(filter: Partial<ServerBrowseFilterSelection> = {}) {
   await harness.render(<Probe filter={{ ...EMPTY_SELECTION, ...filter }} />);
   const elements = collectElements(tree);
   return {
-    chip: (label: string) => elements.filter(element => element.props.children === label),
+    chip: (label: string) => elements.filter(element => {
+      if (element.type !== ChipButton) return false;
+      const children = element.props.children as ReactNode;
+      return children === label || collectElements(children).some(
+        child => child.type === UserCategoryName && child.props.name === label,
+      );
+    }),
     elements,
   };
 }

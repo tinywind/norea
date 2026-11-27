@@ -118,10 +118,10 @@ describe("transitions", () => {
     expect(ruleFor(css, ".mantine-Progress-root").body).toMatch(
       /--progress-transition-duration: var\(--norea-duration-base\);/,
     );
-    const library = readFileSync(new URL("./library.css", stylesDir), "utf8");
+    const chapterCounts = readFileSync(new URL("./chapter-count-badges.css", stylesDir), "utf8");
     const history = readFileSync(new URL("./history.css", stylesDir), "utf8");
     for (const [source, selector] of [
-      [library, ".norea-library-card-progress"],
+      [chapterCounts, ".norea-library-card-progress"],
       [history, ".norea-history-progress-bar"],
     ] as const) {
       expect(ruleFor(source, selector).body, selector).toMatch(

@@ -43,18 +43,21 @@ function UpdateCover({
       onClick={onOpenNovel}
       type="button"
     >
-      <ConsoleCover alt={entry.novelName} height={66} src={coverSource} width={44} />
+      <ConsoleCover alt={entry.novelName} height={60} src={coverSource} width={40} />
     </button>
   );
 }
 
-function UpdateMeta({ entry }: { entry: LibraryUpdateEntry }) {
+function UpdateMeta({ chapterLabel, entry }: { chapterLabel?: string; entry: LibraryUpdateEntry }) {
   const { locale } = useTranslation();
 
   return (
     <span className="norea-updates-row-meta">
-      {entry.pluginName ?? entry.pluginId} ·{" "}
-      {formatRelativeTimeForLocale(locale, entry.sortAt)}
+      {[
+        chapterLabel,
+        entry.pluginName ?? entry.pluginId,
+        formatRelativeTimeForLocale(locale, entry.sortAt),
+      ].filter(Boolean).join(" · ")}
     </span>
   );
 }
@@ -146,14 +149,7 @@ export function UpdateRow({
         className="norea-updates-row-open"
         onClick={onOpen}
         subtitle={
-          nested ? (
-            <UpdateMeta entry={entry} />
-          ) : (
-            <>
-              <span className="norea-updates-row-chapter">{entry.chapterName}</span>
-              <UpdateMeta entry={entry} />
-            </>
-          )
+          <UpdateMeta chapterLabel={nested ? undefined : entry.chapterName} entry={entry} />
         }
         title={nested ? entry.chapterName : entry.novelName}
       />
@@ -175,7 +171,6 @@ interface UpdateRunRowProps {
   earliest: LibraryUpdateEntry;
   count: number;
   expanded: boolean;
-  onOpenEarliest: () => void;
   onOpenNovel: () => void;
   onToggle: () => void;
 }
@@ -185,7 +180,6 @@ export function UpdateRunRow({
   count,
   earliest,
   expanded,
-  onOpenEarliest,
   onOpenNovel,
   onToggle,
 }: UpdateRunRowProps) {
@@ -196,31 +190,17 @@ export function UpdateRunRow({
       <UpdateCover entry={earliest} onOpenNovel={onOpenNovel} />
       <ListRow
         className="norea-updates-row-open"
-        onClick={onOpenEarliest}
+        aria-expanded={expanded}
+        onClick={onToggle}
+        trailing={expanded ? <ChevronUpIcon size="1.25rem" /> : <ChevronDownIcon size="1.25rem" />}
         subtitle={
-          <>
-            <span className="norea-updates-row-chapter">
-              {t("updates.runStartsAt", { name: earliest.chapterName })}
-            </span>
-            <UpdateMeta entry={earliest} />
-          </>
+          <UpdateMeta
+            chapterLabel={t("updates.runStartsAt", { name: earliest.chapterName })}
+            entry={earliest}
+          />
         }
         title={t("updates.runTitle", { count, name: earliest.novelName })}
       />
-      <div className="norea-updates-row-trailing">
-        <IconButton
-          aria-expanded={expanded}
-          label={
-            expanded
-              ? t("updates.collapseRun", { name: earliest.novelName })
-              : t("updates.expandRun", { name: earliest.novelName })
-          }
-          onClick={onToggle}
-          size="lg"
-        >
-          {expanded ? <ChevronUpIcon size="1.25rem" /> : <ChevronDownIcon size="1.25rem" />}
-        </IconButton>
-      </div>
     </div>
   );
 }
@@ -230,11 +210,10 @@ export function UpdateRowsSkeleton({ label }: { label: string }) {
     <div aria-busy="true" aria-label={label} role="status">
       {Array.from({ length: SKELETON_ROWS }, (_, index) => (
         <div className="norea-updates-row norea-updates-row-skeleton" key={index}>
-          <Skeleton height="4.125rem" radius="sm" width="2.75rem" />
+          <Skeleton height="3.75rem" radius="sm" width="2.5rem" />
           <div className="norea-updates-row-skeleton-text">
             <Skeleton height="0.875rem" radius="sm" width="45%" />
             <Skeleton height="0.75rem" radius="sm" width="70%" />
-            <Skeleton height="0.625rem" radius="sm" width="30%" />
           </div>
         </div>
       ))}

@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   queued: new Set<number>(),
   submit: vi.fn(() => ({ id: "request", materialized: Promise.resolve(), promise: Promise.resolve() })),
   setNovelsRead: vi.fn(),
+  confirm: vi.fn(),
   restoreRead: vi.fn(async () => ({ rowsAffected: 0, chunks: 0 })),
   refreshBatch: vi.fn(),
   serverSource: vi.fn(async () => null),
@@ -52,6 +53,7 @@ vi.mock("../../db/queries/chapter", () => ({
   restoreChapterReadStates: mocks.restoreRead,
   setNovelsReadState: mocks.setNovelsRead,
 }));
+vi.mock("../ui/ConfirmDialog", () => ({ useConfirm: () => mocks.confirm }));
 vi.mock("../read-state-undo-toast", () => ({ showReadStateUndoToast: mocks.undoToast }));
 vi.mock("../../lib/reader-query-invalidation", () => ({ invalidateChapterReadStateQueries: mocks.invalidateReadState }));
 vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
@@ -280,14 +282,14 @@ it("marks whole novels read, refreshes each one, and offers Undo for the chapter
   undo.mutate = vi.fn();
   const mark = mocks.mutations[6] as unknown as {
     mutationFn: (input: { novelIds: number[]; unread: boolean }) => Promise<unknown>;
-    onSuccess: (result: { previous: Array<{ id: number }> }, input: { novelIds: number[]; unread: boolean }) => void;
+    onSuccess: (result: { rowsAffected: number; previous: Array<{ id: number }> }, input: { novelIds: number[]; unread: boolean }) => void;
   };
   const previous = [{ id: 11, unread: true, progress: 0 }];
   mocks.setNovelsRead.mockResolvedValue({ rowsAffected: 1, chunks: 1, previous });
   await mark.mutationFn({ novelIds: [1, 2], unread: false });
-  expect(mocks.setNovelsRead).toHaveBeenCalledWith([1, 2], false);
+  expect(mocks.setNovelsRead).toHaveBeenCalledWith([1, 2], false, 50_000);
 
-  mark.onSuccess({ previous }, { novelIds: [1, 2], unread: false });
+  mark.onSuccess({ rowsAffected: 1, previous }, { novelIds: [1, 2], unread: false });
   expect(mocks.setSelecting).toHaveBeenLastCalledWith(false);
   expect(mocks.invalidateReadState.mock.calls.map(([, scope]) => scope)).toEqual([{ novelId: 1 }, { novelId: 2 }]);
   expect(mocks.t).toHaveBeenCalledWith("library.readState.markedRead", { chapters: 1, count: 2 });
@@ -295,7 +297,26 @@ it("marks whole novels read, refreshes each one, and offers Undo for the chapter
   toast.onUndo();
   expect(undo.mutate).toHaveBeenCalledWith({ novelIds: [1, 2], previous });
 
-  mark.onSuccess({ previous: [] }, { novelIds: [3], unread: true });
+  mark.onSuccess({ rowsAffected: 0, previous: [] }, { novelIds: [3], unread: true });
   expect(mocks.undoToast).toHaveBeenCalledTimes(1);
   expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "ok", message: "library.readState.markedUnread" });
+});
+
+it("waits for consent before changing more chapters than Undo can restore", async () => {
+  useLibrarySelection({}, "nameAsc");
+  const mark = mocks.mutations[6] as unknown as {
+    mutationFn: (input: { novelIds: number[]; unread: boolean }) => Promise<unknown>;
+  };
+  const needsConfirmation = { confirmationChapterCount: 50_001, previous: [], rowsAffected: 0, chunks: 0 };
+  mocks.setNovelsRead.mockResolvedValueOnce(needsConfirmation);
+  mocks.confirm.mockResolvedValueOnce(false);
+  const input = { novelIds: [3], unread: true };
+  await expect(mark.mutationFn(input)).resolves.toBe(null);
+  expect(mocks.setNovelsRead).toHaveBeenCalledTimes(1);
+
+  mocks.setNovelsRead.mockResolvedValueOnce(needsConfirmation)
+    .mockResolvedValueOnce({ rowsAffected: 50_001, chunks: 1, previous: [] });
+  mocks.confirm.mockResolvedValueOnce(true);
+  await expect(mark.mutationFn(input)).resolves.toMatchObject({ rowsAffected: 50_001 });
+  expect(mocks.setNovelsRead).toHaveBeenLastCalledWith([3], true, 50_001);
 });

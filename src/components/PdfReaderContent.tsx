@@ -1632,6 +1632,7 @@ function PdfReaderContentInner(
           >
             {t("reader.pdfZoom.out")}
           </Button>
+          <span className="norea-pdf-reader-zoom-value">{Math.round(zoom * 100)}%</span>
           <button
             aria-label={t("reader.pdfZoom.fit")}
             className="norea-pdf-reader-zoom-level norea-state-layer"
@@ -1640,7 +1641,7 @@ function PdfReaderContentInner(
             title={t("reader.pdfZoom.fit")}
             type="button"
           >
-            {zoomed ? `${Math.round(zoom * 100)}%` : t("reader.pdfZoom.fitShort")}
+            {t("reader.pdfZoom.fitShort")}
           </button>
           <Button
             aria-label={t("reader.pdfZoom.in")}

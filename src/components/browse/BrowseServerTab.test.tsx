@@ -109,6 +109,7 @@ interface ControlProps {
   actions?: ReactNode;
   allSelected?: boolean;
   label?: string;
+  items?: Array<{ label: string; onClick: () => void }>;
   onSelect?: () => void;
   onSelectAll?: () => void;
   children?: ReactNode;
@@ -147,6 +148,9 @@ beforeEach(() => {
 
 const toolbarAction = (elements: ReactElement<ControlProps>[], label: string) =>
   elements.find(element => element.type === IconButton && element.props.label === label)!.props;
+
+const addAllAction = (elements: ReactElement<ControlProps>[]) =>
+  elements.flatMap(element => element.props.items ?? []).find(item => item.label === "serverLibraryAdd.addAll")!;
 
 type FiltersProps = Parameters<typeof ServerBrowseFilters>[0];
 const filters = (elements: ReactElement<ControlProps>[]) =>
@@ -188,7 +192,7 @@ it("browses only the chosen statuses, categories, and tags and keeps them for ad
     uncategorized: true,
   };
   expect(mocks.selectionOptions.at(-1)).toMatchObject({ filter: expectedFilter });
-  toolbarAction(elements, "serverLibraryAdd.addAll").onClick!();
+  addAllAction(elements).onClick();
   expect(mocks.bulkRequest).toHaveBeenCalledWith({ count: 2, works: expectedFilter });
 });
 
@@ -253,14 +257,14 @@ it("keeps filters separate for each content server", () => {
 it("offers adding every matching server work, including unloaded pages, from the toolbar", () => {
   mocks.pages = [{ items: [work("first"), work("second")], total: 120, hasMore: true }];
   useContentServerBrowseStore.getState().setFilters("http://server", { query: "saga", source: "source-a" });
-  toolbarAction(render(), "serverLibraryAdd.addAll").onClick!();
+  addAllAction(render()).onClick();
   expect(mocks.bulkRequest).toHaveBeenCalledWith({
     count: 120,
     works: { categories: [], query: "saga", source: "source-a", statuses: [], tags: [], uncategorized: false },
   });
 });
 
-it("enters selection from the toolbar or a card's long press", () => {
+it("enters selection from the toolbar or a card menu", () => {
   const elements = render();
   toolbarAction(elements, "library.selection.start").onClick!();
   expect(mocks.selection.enter).toHaveBeenCalledWith();

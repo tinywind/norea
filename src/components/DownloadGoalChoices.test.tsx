@@ -67,6 +67,7 @@ it("keeps supported saved counts visible and changes the shared policy when a co
 
 it("disables policy controls only for the settings operation's busy state", () => {
   const controls = render({ kind: "none" }, true).filter(element => (element.type === "input" && element.props.type === "radio") || element.type === SegmentedToggle);
-  expect(controls).toHaveLength(5);
+  expect(controls).toHaveLength(4);
+  expect(render({ kind: "entire" }).some(element => element.type === SegmentedToggle)).toBe(false);
   expect(controls.every(element => element.props.disabled)).toBe(true);
 });

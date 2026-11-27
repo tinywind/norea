@@ -549,9 +549,24 @@
 }
 
 .norea-server-browse {
+  container: server-browse / inline-size;
   display: grid;
   gap: var(--norea-space-3);
   min-width: 0;
+}
+
+.norea-server-add-wide {
+  display: none;
+}
+
+@container server-browse (min-width: 40rem) {
+  .norea-server-add-wide {
+    display: inline-flex;
+  }
+
+  .norea-server-add-compact {
+    display: none;
+  }
 }
 
 .norea-server-browse-toolbar {
@@ -618,7 +633,6 @@
 }
 
 .norea-source-card-categories {
-  color: var(--norea-color-accent);
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
   max-width: 6.5rem;
@@ -720,7 +734,6 @@
 }
 
 .norea-source-catalog-card-categories {
-  color: var(--norea-color-accent);
   display: block;
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
@@ -747,10 +760,9 @@
 }
 
 .norea-source-catalog-card-overlay .norea-source-catalog-card-categories {
-  background: var(--norea-color-accent);
+  background: var(--norea-color-accent-soft);
   border-radius: var(--norea-radius-sm);
   box-sizing: border-box;
-  color: var(--norea-color-on-accent);
   font-weight: var(--norea-weight-bold);
   justify-self: start;
   line-height: 1.25;
@@ -765,10 +777,8 @@
   width: 100%;
 }
 
-@media (hover: hover) {
-  .norea-quick-add-card:has(.norea-quick-add-button) .norea-source-list-row {
-    padding-inline-end: calc(var(--norea-control-sm) + var(--norea-space-5));
-  }
+.norea-quick-add-card:has(.norea-quick-add-button) .norea-source-list-row {
+  padding-inline-end: calc(var(--norea-control-md) + var(--norea-space-5));
 }
 
 .norea-source-list-row:disabled {
@@ -782,7 +792,6 @@
 }
 
 .norea-source-row-categories {
-  color: var(--norea-color-accent);
   display: block;
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
@@ -897,6 +906,7 @@
 .norea-quick-add-card {
   --norea-quick-add-inset: var(--norea-space-1);
   -webkit-touch-callout: none;
+  container-type: inline-size;
   display: grid;
   min-width: 0;
   position: relative;
@@ -905,12 +915,7 @@
 
 .norea-source-card ~ .norea-quick-add-button,
 .norea-source-card ~ .norea-quick-add-pending {
-  --norea-quick-add-inset: calc(var(--norea-space-2) + var(--norea-space-1));
-}
-
-.norea-source-catalog-card ~ .norea-quick-add-button,
-.norea-source-catalog-card ~ .norea-quick-add-pending {
-  --norea-quick-add-inset: calc(var(--norea-space-1) + var(--norea-space-1));
+  --norea-quick-add-inset: var(--norea-space-2);
 }
 
 .norea-source-list-row ~ .norea-quick-add-button,
@@ -928,51 +933,60 @@
 .norea-quick-add-button,
 .norea-quick-add-pending {
   align-items: center;
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-full);
-  color: var(--norea-color-ink);
+  background: transparent;
+  border: 0;
+  border-radius: var(--norea-radius-sm);
+  color: #fff;
   display: inline-flex;
-  height: var(--norea-control-sm);
+  height: var(--norea-control-md);
   justify-content: center;
   left: var(--norea-quick-add-inset);
   padding: 0;
   position: absolute;
   top: var(--norea-quick-add-inset);
-  width: var(--norea-control-sm);
+  width: var(--norea-control-md);
   z-index: 3;
 }
 
 .norea-quick-add-button {
+  --norea-icon-glyph-size: clamp(0.625rem, calc(0.375rem + 4cqi), 1rem);
+  align-items: flex-start;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--norea-duration-fast) var(--norea-ease-standard);
+  justify-content: flex-start;
+  padding: var(--norea-space-2);
 }
 
-.norea-quick-add-button:focus-visible {
-  opacity: 1;
+.norea-quick-add-button > svg {
+  height: var(--norea-icon-glyph-size);
+  width: var(--norea-icon-glyph-size);
 }
 
-@media (hover: hover) {
-  .norea-quick-add-card:hover .norea-quick-add-button {
-    opacity: 1;
+.norea-quick-add-button > svg,
+.norea-quick-add-pending > .mantine-Loader-root {
+  filter: drop-shadow(0 0 1px rgb(0 0 0 / 0.95));
+}
+
+.norea-source-list-row ~ .norea-quick-add-button,
+.norea-source-list-row ~ .norea-quick-add-pending {
+  align-items: center;
+  color: var(--norea-color-icon-subtle);
+  justify-content: center;
+  padding: 0;
+}
+
+.norea-source-list-row ~ .norea-quick-add-button > svg,
+.norea-source-list-row ~ .norea-quick-add-pending > .mantine-Loader-root {
+  filter: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .norea-quick-add-card:not(:hover, :focus-within) .norea-quick-add-button:not([aria-expanded="true"]) {
+    opacity: 0;
   }
 }
 
-.norea-quick-add-button:disabled {
-  cursor: wait;
-}
-
-@media (hover: none) {
-  .norea-quick-add-button {
-    display: none;
-  }
-}
-
-.norea-quick-add-anchor {
-  inset: 0;
-  pointer-events: none;
-  position: absolute;
+.norea-quick-add-card[data-pending="true"] .norea-quick-add-button {
+  visibility: hidden;
 }
 
 .norea-extension-section-note {

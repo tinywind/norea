@@ -91,9 +91,19 @@ export function HistoryRow({
         : null;
   const readAt = formatRelativeTimeForLocale(locale, entry.readAt);
   const chapterNumber = shownChapterNumber(entry);
+  const waitingForNext = finished && nextChapter.isPending;
+  let action: string;
+  if (finished && readyNextChapter) {
+    action = t("novel.continueChapter", { number: formatChapterNumber(readyNextChapter) });
+  } else if (finished) {
+    action = t(waitingForNext ? "history.checkingNextChapter" : "history.viewWork");
+  } else {
+    action = chapterNumber ? t("novel.continueChapter", { number: chapterNumber })
+      : t("history.continueNamedChapter", { name: entry.chapterName });
+  }
   const meta = [
-    chapterNumber ? t("history.chapterNumber", { number: chapterNumber }) : entry.chapterName,
-    finished ? t("common.finished") : progress > 0 ? `${progress}%` : null,
+    action,
+    finished ? (readyNextChapter ? null : t("common.finished")) : progress > 0 ? `${progress}%` : null,
     readAt,
   ].filter(Boolean).join(" · ");
 
@@ -101,14 +111,13 @@ export function HistoryRow({
     <div className="norea-history-row" data-removing={removing ? "true" : undefined}>
       <ListRow
         className="norea-history-row-open"
+        disabled={waitingForNext}
         leading={<HistoryCover entry={entry} />}
-        onClick={() => onContinue(finished ? readyNextChapter : undefined)}
+        onClick={() => onContinue(finished ? readyNextChapter ?? null : undefined)}
         subtitle={
           <>
             <span className="norea-history-row-meta">
-              {finished && readyNextChapter
-                ? `${t("history.nextChapter", { number: formatChapterNumber(readyNextChapter) })} · ${readAt}`
-                : meta}
+              {meta}
             </span>
             <span aria-hidden="true" className="norea-history-progress">
               <span

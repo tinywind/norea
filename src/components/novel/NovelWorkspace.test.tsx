@@ -14,15 +14,14 @@ import {
 vi.mock("../../i18n", () => ({
   useTranslation: () => ({
     t: (key: string, values?: Record<string, unknown>) =>
-      values?.read !== undefined
-        ? `${key}:${values.read}/${values.total}`
-        : values?.number === undefined ? key : `${key}:${values.number}`,
+      values?.number === undefined ? key : `${key}:${values.number}`,
   }),
 }));
 vi.mock("../../lib/plugins/manager", () => ({ pluginManager: { getPlugin: () => ({ id: "source-a" }) } }));
 vi.mock("../../lib/use-novel-cover-source", () => ({ useNovelCoverSource: (_novel: unknown, options: { allowSourceFallback: boolean }) => options.allowSourceFallback ? "https://original.test/cover.jpg" : null }));
 
 import { NovelWorkspace } from "./NovelWorkspace";
+import { getNovelChapterStats } from "./novel-detail-model";
 
 const chapter: ChapterListRow = {
   id: 1, novelId: 3, name: "One", path: "/1", chapterNumber: "1", position: 1, page: "1",
@@ -38,12 +37,13 @@ const props: ComponentProps<typeof NovelWorkspace> = {
     summary: null, author: null, artist: null, status: null, genres: null, rating: null, inLibrary: false, isLocal: false,
     createdAt: 1, updatedAt: 1, libraryAddedAt: null, lastReadAt: null, statusOverride: null,
   },
-  chapters: [], downloadStatuses: new Map(), lastReadChapterId: undefined, libraryBusy: false,
+  chapters: [], chapterStats: undefined, downloadStatuses: new Map(), lastReadChapterId: undefined, libraryBusy: false,
   onRead: vi.fn(), onSelectChapters: vi.fn(), onSelectGenre: vi.fn(), onToggleLibrary: vi.fn(), sourceName: "Source",
 };
 
 function render(overrides: Partial<ComponentProps<typeof NovelWorkspace>> = {}) {
-  return load(renderToStaticMarkup(<MantineProvider><NovelWorkspace {...props} {...overrides} /></MantineProvider>));
+  const chapterStats = getNovelChapterStats(overrides.chapters ?? props.chapters);
+  return load(renderToStaticMarkup(<MantineProvider><NovelWorkspace {...props} chapterStats={chapterStats} {...overrides} /></MantineProvider>));
 }
 
 const buttonTexts = ($: ReturnType<typeof render>) =>
@@ -53,6 +53,11 @@ it("renders the work's tags as buttons beneath its summary", () => {
   const $ = render({ novel: { ...props.novel, summary: "Synopsis", genres: "#Fantasy, #Romance" } });
   const summary = $(".norea-novel-summary-text");
   expect(summary.text()).toBe("Synopsis");
+  expect(summary.parent().prev().hasClass("norea-novel-info-row")).toBe(true);
+  expect($(".norea-novel-info-row > .norea-novel-category-slot")).toHaveLength(1);
+  expect(summary.closest(".norea-novel-identity-text").children().map((_, el) => $(el).attr("class")).get()).toEqual([
+    "norea-novel-title", "norea-novel-info-row", "norea-novel-summary",
+  ]);
   expect(summary.next().find("li > button").map((_, button) => $(button).text()).get())
     .toEqual(["Fantasy", "Romance"]);
 });
@@ -109,6 +114,11 @@ it("continues at the downloaded next chapter by number and offers From start", a
   }
 });
 
+it("offers the first chapter again only when it opens at a different position", () => {
+  expect(buttonTexts(render({ chapters: [chapter], lastReadChapterId: 1 }))).not.toContain("novel.fromStart");
+  expect(buttonTexts(render({ chapters: [{ ...chapter, progress: 25 }], lastReadChapterId: 1 }))).toContain("novel.fromStart");
+});
+
 it("shows nothing to continue when finished with no downloaded next chapter", () => {
   const caughtUp = render({
     chapters: [{ ...chapter, progress: 100 }],
@@ -141,53 +151,69 @@ it("disables the primary action only when there is no chapter", () => {
   expect(primary.prop("disabled")).toBe(true);
 });
 
-it("labels the library toggle with its state and hides Download for local works", () => {
+it("offers Add only outside the library and hides Download for local works", () => {
   const inLibrary = render({ novel: { ...props.novel, inLibrary: true } });
-  const toggle = inLibrary("button[aria-pressed]");
-  expect(toggle.text()).toBe("novel.inLibraryAction");
-  expect(toggle.attr("aria-pressed")).toBe("true");
+  expect(buttonTexts(inLibrary)).not.toContain("novel.addToLibrary");
+  expect(buttonTexts(inLibrary)).not.toContain("novel.inLibraryAction");
   expect(buttonTexts(inLibrary)).toContain("novel.download");
 
   const local = render({ novel: { ...props.novel, isLocal: true } });
-  expect(local("button[aria-pressed]").text()).toBe("novel.addToLibrary");
+  expect(buttonTexts(local)).toContain("novel.addToLibrary");
   expect(buttonTexts(local)).not.toContain("novel.download");
 });
 
-it("shows a known status in the app language and maps retired Unknown to Ongoing", () => {
-  expect(render({ novel: { ...props.novel, status: "Ongoing" } }).text()).toContain("novel.status.ongoing · Source");
-  expect(render({ novel: { ...props.novel, status: "Unknown" } }).text()).toContain("novel.status.ongoing · Source");
-  expect(render({ novel: { ...props.novel, status: "Unknown" } }).text()).not.toContain("Unknown");
+it.each(["Ongoing", "Unknown"])("shows the source and localized ongoing status separately for %s", (status) => {
+  const $ = render({ novel: { ...props.novel, status } });
+  const statusLine = $(".norea-novel-metadata > .norea-novel-status");
+  expect(statusLine.text()).toBe("novel.status.ongoing");
+  expect(statusLine.prev(".norea-novel-meta").text()).toBe("Source");
+  expect($(".norea-novel-identity-text").text()).not.toContain("Unknown");
 });
 
-it("names a goal novel's offline state in the header, as its library card does", () => {
-  expect(render()(".norea-novel-offline").length).toBe(0);
-  const $ = render({ offlineState: "attention" });
-  expect($(".norea-novel-offline").attr("data-goal-state")).toBe("attention");
-  expect($(".norea-novel-offline").text()).toBe("novel.offline.attention");
+it("reserves the badge row without reporting zero downloads before chapters load", () => {
+  const pending = render({ chapterStats: undefined, offlineState: "ready" });
+  expect(pending(".norea-novel-reading-status")).toHaveLength(1);
+  expect(pending(".norea-novel-reading-status [data-kind]")).toHaveLength(0);
+
+  const ready = render({ offlineState: "attention" });
+  const badge = ready(".norea-novel-reading-status [data-kind=downloaded]");
+  expect(badge.attr("data-goal-state")).toBe("attention");
+  expect(badge.attr("title")).toContain("library.grid.offline.attention");
 });
 
-it("counts read chapters instead of averaging progress over every chapter", () => {
-  const unreadOnly = render({ chapters: [{ ...chapter, progress: 40 }], lastReadChapterId: 1 });
-  expect(unreadOnly.text()).not.toContain("novel.chaptersRead");
-
+it("shows stored and unread chapter counts and the cover progress used on library cards", () => {
   const $ = render({
     chapters: [
-      { ...chapter, progress: 100 },
-      { ...chapter, id: 2, position: 2, progress: 30 },
+      { ...chapter, progress: 100, isDownloaded: true },
+      { ...chapter, id: 2, position: 2, progress: 30, contentBytes: 450 },
       { ...chapter, id: 3, position: 3 },
+      { ...chapter, id: 4, position: 4 },
     ],
-    lastReadChapterId: 2,
+    offlineState: "ready",
+    categoryChips: <span>Reading</span>,
   });
-  expect($.text()).toContain("novel.chaptersRead:1/3");
-  expect($.text()).not.toContain("percentRead");
+  const status = $(".norea-novel-info-row > .norea-novel-reading-status");
+  expect(status.prev(".norea-novel-category-slot").text()).toBe("Reading");
+  expect(status.find("[data-kind]").map((_, badge) => [$(badge).attr("data-kind")]).get()).toEqual(["downloaded", "unread"]);
+  expect(status.find("[data-kind=downloaded] span[aria-hidden=true]").text()).toBe("2");
+  expect(status.find("[data-kind=unread] span[aria-hidden=true]").text()).toBe("3");
+  expect($(".norea-novel-cover .norea-library-card-progress").attr("style")).toContain("33%");
 });
 
-it("lays the secondary actions out in equal columns under the Continue button", () => {
+it("hides the unread and downloaded badges under the same conditions as the library", () => {
+  const $ = render({ chapters: [{ ...chapter, progress: 100 }] });
+  expect($(".norea-novel-reading-status [data-kind]")).toHaveLength(0);
+  expect($(".norea-novel-cover .norea-library-card-progress").attr("style")).toContain("100%");
+});
+
+it("places borderless secondary actions beneath the primary action and lets long labels wrap", () => {
+  const $ = render({ chapters: [chapter] });
+  const secondary = $(".norea-novel-actions button");
+  expect(secondary).toHaveLength(2);
+  expect(secondary.map((_, button) => $(button).attr("data-variant")).get()).toEqual(["subtle", "subtle"]);
+  expect($(".norea-novel-continue + .norea-novel-actions")).toHaveLength(1);
   const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
-  const actions = /\.norea-novel-actions \{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(actions).toContain("display: grid");
-  expect(actions).toContain("grid-auto-columns: minmax(0, 1fr)");
-  expect(actions).toContain("grid-auto-flow: column");
-  const meta = /\.norea-novel-meta \{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(meta).toContain("line-height: var(--norea-leading-normal)");
+  expect(css).toMatch(/\.norea-novel-continue \{[^}]*min-height: max\(3rem, var\(--norea-control-md\)\)/);
+  expect(css).toMatch(/\.norea-novel-actions \.mantine-Button-root \{[^}]*min-height: var\(--norea-control-md\)/);
+  expect(css).toMatch(/\.norea-novel-actions \.mantine-Button-label,[^{]+\{[^}]*white-space: normal/);
 });

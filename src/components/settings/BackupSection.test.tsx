@@ -41,7 +41,7 @@ function runEffectLifecycle(initialActive: boolean) {
   const render = (active: boolean) => {
     mocks.pageActive = active;
     mocks.effects = [];
-    BackupSection({ isBusy: false, onBusyChange: vi.fn() });
+    BackupSection({ busyAction: null, isBusy: false, onBusyChange: vi.fn() });
     expect(mocks.effects).toHaveLength(1);
     const { effect, deps } = mocks.effects[0]!;
     const depsChanged =

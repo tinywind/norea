@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { isValidElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   collectElements,
@@ -7,7 +7,7 @@ import {
 } from "../../lib/android-back-navigation.test-support";
 
 const mocks = vi.hoisted(() => ({
-  assigned: [4] as number[],
+  assigned: [4] as number[] | undefined,
   mutate: vi.fn(),
   mutationOptions: null as null | { onSuccess: (data: unknown, ids: number[]) => Promise<void> },
   saveError: null as unknown,
@@ -18,9 +18,13 @@ vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() }),
   useQuery: ({ queryKey }: { queryKey: unknown[] }) => ({
     data: queryKey[1] === "list"
-      ? [{ id: 4, name: "Favorites", isSystem: false }, { id: 5, name: "Later", isSystem: false }]
+      ? [
+        { id: 4, name: "Favorites", isSystem: false },
+        { id: 5, name: "Later", isSystem: false },
+        { id: 6, name: "\u2b50".repeat(5), isSystem: false },
+      ]
       : mocks.assigned,
-    isPending: false,
+    isPending: queryKey[1] !== "list" && mocks.assigned === undefined,
     error: null,
     refetch: vi.fn(),
   }),
@@ -38,7 +42,6 @@ vi.mock("../../db/queries/category", () => ({
 }));
 vi.mock("../ui/ResponsiveSheet", () => ({ ResponsiveSheet: () => null }));
 
-import { ChipButton } from "../ChipButton";
 import { NovelCategoryEditor } from "./NovelCategoryEditor";
 
 let harness: BackNavigationHarness | undefined;
@@ -58,7 +61,7 @@ afterEach(async () => {
 });
 
 function EditorProbe({ sheetOpen }: { sheetOpen: boolean }) {
-  tree = NovelCategoryEditor({ active: true, novelId: 3, novelName: "Saved novel", onCloseSheet, onOpenSheet, sheetOpen });
+  tree = NovelCategoryEditor({ active: true, initialCategories: [{ id: 12, name: "Current assignment" }], novelId: 3, novelName: "Saved novel", onCloseSheet, onOpenSheet, sheetOpen });
   return null;
 }
 
@@ -73,29 +76,46 @@ const sheetElements = () => [
   ...collectElements(sheet().props.children as ReactNode),
   ...collectElements(sheet().props.footer as ReactNode),
 ];
-const chips = () => elements().filter((element) => element.type === ChipButton);
-const text = (element: { props: Record<string, unknown> }) => String(element.props.children);
+const editButtons = () => elements().filter((element) => element.props["aria-haspopup"] === "dialog");
+const checkbox = (name: string) => sheetElements().find((element) =>
+  isValidElement<{ name: string }>(element.props.label) && element.props.label.props.name === name)!;
 
-it("shows assigned categories as chips that open the category sheet", async () => {
+it("shows assigned categories as text next to one edit action", async () => {
+  mocks.assigned = [4, 6];
   await render(false);
-  expect(chips().map(text)).toEqual(["Favorites"]);
+  const labels = elements().filter(element => element.type === "li")
+    .map(element => collectElements(element.props.children as ReactNode)[0]!.props);
+  expect(labels.map(label => label.children)).toEqual(["Favorites", "\u2605".repeat(5)]);
+  expect(labels[1]!.title).toBe("\u2b50".repeat(5));
   expect(sheet().props.opened).toBe(false);
-
-  await harness!.run(() => (chips()[0]!.props.onClick as () => void)());
+  expect(editButtons()).toHaveLength(1);
+  await harness!.run(() => (editButtons()[0]!.props.onClick as () => void)());
   expect(onOpenSheet).toHaveBeenCalledTimes(1);
 });
 
-it("offers a + Category chip when the novel has no category", async () => {
+it("shows the detail assignment and its pencil before editor membership loads", async () => {
+  mocks.assigned = undefined;
+  await render(true);
+  expect(elements().some(element => element.props.title === "Current assignment")).toBe(true);
+  expect(editButtons()).toHaveLength(1);
+  expect(sheetElements().find(element => element.props.children === "common.apply")!.props.disabled).toBe(true);
+
+  mocks.assigned = [];
+  await render(true);
+  expect(elements().some(element => element.props.title === "Current assignment")).toBe(false);
+  expect(editButtons()).toHaveLength(1);
+});
+
+it("offers the same edit action for an uncategorized novel", async () => {
   mocks.assigned = [];
   await render(false);
-  expect(chips()).toHaveLength(1);
-  expect(text(chips()[0]!)).toBe("categories.addToWork");
+  expect(editButtons()).toHaveLength(1);
+  expect(editButtons()[0]!.props.label).toBe("categories.editWork");
 });
 
 it("starts the sheet from the saved assignment and applies the edited choice", async () => {
   await render(true);
   expect(sheet().props.opened).toBe(true);
-  const checkbox = (label: string) => sheetElements().find((element) => element.props.label === label)!;
   expect(checkbox("Favorites").props.checked).toBe(true);
   expect(checkbox("Later").props.checked).toBe(false);
 
@@ -116,7 +136,7 @@ it("clears the choice without saving until Apply and closes on Cancel", async ()
   await render(true);
   const clear = sheetElements().find((element) => element.props.children === "categories.clearWork")!;
   await harness!.run(() => (clear.props.onClick as () => void)());
-  expect(sheetElements().find((element) => element.props.label === "Favorites")!.props.checked).toBe(false);
+  expect(checkbox("Favorites").props.checked).toBe(false);
   expect(mocks.mutate).not.toHaveBeenCalled();
 
   const cancel = sheetElements().find((element) => element.props.children === "common.cancel")!;

@@ -1,5 +1,5 @@
 import { Box, Button, Modal, Text } from "@mantine/core";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { create } from "zustand";
 import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
@@ -7,7 +7,7 @@ import { SHEET_CLASS_NAMES, SHEET_DIALOG_WIDTHS, SheetActions } from "./Responsi
 
 export interface ConfirmOptions {
   title: string;
-  message: string;
+  message: ReactNode;
   confirmLabel: string;
   cancelLabel?: string;
   /** Fills the confirm button in the danger role and starts focus on cancel. */

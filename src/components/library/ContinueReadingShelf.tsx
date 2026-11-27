@@ -76,7 +76,7 @@ function ContinueReadingCard({
       <span aria-hidden="true" className="norea-continue-card-cover">
         <ConsoleCover alt={entry.novelName} height="auto" src={coverSource} width="100%" />
       </span>
-      <VisuallyHidden>{entry.novelName}</VisuallyHidden>
+      <span className="norea-continue-card-title">{entry.novelName}</span>
       <span className="norea-continue-card-meta">
         <span className="norea-continue-card-chapter">
           {t("history.chapterNumber", { number: formatChapterNumber(target) })}

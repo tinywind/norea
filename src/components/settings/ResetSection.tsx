@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Checkbox, Stack } from "@mantine/core";
+import { Button, Checkbox, Stack } from "@mantine/core";
 import {
   SettingsFieldRow,
   SettingsInlineControls,
@@ -7,7 +7,7 @@ import {
 } from "../SettingsPrimitives";
 import { IconButton } from "../IconButton";
 import { useConfirm } from "../ui/ConfirmDialog";
-import { ResetIcon, TrashIcon } from "../ui/icons";
+import { ResetIcon } from "../ui/icons";
 import {
   clearReadingProgress,
   clearUpdatesTab,
@@ -29,7 +29,7 @@ import {
 } from "./settings-toast";
 
 /** Global destructive actions. Contextual ones stay with their own settings. */
-export function ResetSection({ isBusy, onBusyChange }: SettingsBusyProps) {
+export function ResetSection({ busyAction, isBusy, onBusyChange }: SettingsBusyProps) {
   const { t } = useTranslation();
   const confirm = useConfirm();
   const resetAppearance = useAppearanceStore((state) => state.resetAppearance);
@@ -151,29 +151,27 @@ export function ResetSection({ isBusy, onBusyChange }: SettingsBusyProps) {
           label={t("settings.data.libraryMembership.label")}
           description={t("settings.data.libraryMembership.description")}
         >
-          <IconButton
-            label={t("settings.data.libraryMembership.button")}
-            size="lg"
-            tone="danger"
+          <Button
+            color="danger"
+            variant="subtle"
             disabled={isBusy}
-            loading={isBusy}
+            loading={busyAction === "maintenance.clearLibraryMembership"}
             onClick={() => {
               void clearLibrary();
             }}
           >
-            <TrashIcon />
-          </IconButton>
+            {t("settings.data.libraryMembership.button")}
+          </Button>
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.data.readingProgress.label")}
           description={t("settings.data.readingProgress.description")}
         >
-          <IconButton
-            label={t("settings.data.readingProgress.button")}
-            size="lg"
-            tone="danger"
+          <Button
+            color="danger"
+            variant="subtle"
             disabled={isBusy}
-            loading={isBusy}
+            loading={busyAction === "maintenance.clearReadingProgress"}
             onClick={() => {
               void runMaintenance(
                 "maintenance.clearReadingProgress",
@@ -192,19 +190,18 @@ export function ResetSection({ isBusy, onBusyChange }: SettingsBusyProps) {
               );
             }}
           >
-            <TrashIcon />
-          </IconButton>
+            {t("settings.data.readingProgress.button")}
+          </Button>
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.data.updatesQueue.label")}
           description={t("settings.data.updatesQueue.description")}
         >
-          <IconButton
-            label={t("settings.data.updatesQueue.button")}
-            size="lg"
-            tone="danger"
+          <Button
+            color="danger"
+            variant="subtle"
             disabled={isBusy}
-            loading={isBusy}
+            loading={busyAction === "maintenance.clearUpdates"}
             onClick={() => {
               void runMaintenance(
                 "maintenance.clearUpdates",
@@ -219,8 +216,8 @@ export function ResetSection({ isBusy, onBusyChange }: SettingsBusyProps) {
               );
             }}
           >
-            <TrashIcon />
-          </IconButton>
+            {t("settings.data.updatesQueue.button")}
+          </Button>
         </SettingsFieldRow>
       </SettingsSection>
 

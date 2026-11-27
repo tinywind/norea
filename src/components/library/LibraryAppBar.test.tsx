@@ -14,19 +14,22 @@ let harness: BackNavigationHarness | undefined;
 let tree: ReactNode;
 const onSearchChange = vi.fn();
 const onRefresh = vi.fn();
+const onManageCategories = vi.fn();
 
 afterEach(async () => {
   await harness?.unmount();
   harness = undefined;
   onSearchChange.mockClear();
   onRefresh.mockClear();
+  onManageCategories.mockClear();
 });
 
 function AppBarProbe({ wide, search = "", refreshDisabled = false, refreshing = false }: {
   wide: boolean; search?: string; refreshDisabled?: boolean; refreshing?: boolean;
 }) {
   tree = LibraryAppBar({
-    onOpenViewOptions: vi.fn(), onRefresh, onSearchChange,
+    categoryTabs: wide ? null : <div />,
+    onManageCategories, onOpenViewOptions: vi.fn(), onRefresh, onSearchChange,
     overflowItems: [], refreshDisabled, refreshing, search, wide,
   });
   return null;
@@ -41,9 +44,12 @@ it("offers search, refresh and view options directly on phones and expands searc
   await harness.render(<AppBarProbe wide={false} />);
   expect(searchField()).toBeUndefined();
   expect(labeled("library.search.aria")).toHaveLength(1);
-  expect(labeled("library.viewOptions.title")).toHaveLength(1);
+  expect(labeled("library.viewOptions.display")).toHaveLength(1);
   expect(labeled("common.more")).toHaveLength(1);
   expect(labeled("library.refresh")).toHaveLength(1);
+  expect(labeled("library.manageCategories")).toHaveLength(1);
+  await harness.run(() => (labeled("library.manageCategories")[0]!.props.onClick as () => void)());
+  expect(onManageCategories).toHaveBeenCalledOnce();
 
   await harness.run(() => (labeled("library.search.aria")[0]!.props.onClick as () => void)());
   expect(searchField()?.props.autoFocus).toBe(true);
@@ -59,8 +65,9 @@ it("shows the inline search field, Refresh and the view options icon on wide scr
   harness = mountBackNavigationHarness();
   await harness.render(<AppBarProbe wide />);
   expect(searchField()).toBeDefined();
+  expect(labeled("library.manageCategories")).toHaveLength(1);
   expect(labeled("library.refresh")).toHaveLength(1);
-  expect(labeled("library.viewOptions.title")).toHaveLength(1);
+  expect(labeled("library.viewOptions.display")).toHaveLength(1);
 });
 
 it("refreshes from the phone action and disables it while unavailable or already refreshing", async () => {

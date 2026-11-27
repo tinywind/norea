@@ -1,4 +1,4 @@
-import { Stack, Text } from "@mantine/core";
+import { Menu, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -6,7 +6,7 @@ import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/c
 import { type NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { describeError } from "../../lib/errors";
-import { DEFAULT_CHAPTER_SORT_LABEL_KEYS } from "../../lib/library-settings-options";
+import { DEFAULT_CHAPTER_SORT_LABEL_KEYS, DEFAULT_CHAPTER_SORT_ORDERS } from "../../lib/library-settings-options";
 import { pluginManager } from "../../lib/plugins/manager";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
 import { type DefaultChapterSort } from "../../store/library";
@@ -15,7 +15,7 @@ import { StateView } from "../AppFrame";
 import { DownloadOnceChoices } from "../DownloadOnceChoices";
 import { BRIEF_TOAST_AUTO_CLOSE_MS } from "../ui/AppToasts";
 import { IconButton } from "../IconButton";
-import { SortIcon } from "../ui/icons";
+import { CheckIcon, SortIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import { downloadOnceNotice, queueChapterDownloadsOnce, type DownloadOnceSelection } from "../library/download-once";
 
@@ -96,18 +96,23 @@ interface ChapterSortPickerProps {
 export function ChapterSortPicker({ onChange, value }: ChapterSortPickerProps) {
   const { t } = useTranslation();
   const activeLabel = t(DEFAULT_CHAPTER_SORT_LABEL_KEYS[value]);
-  const nextValue: DefaultChapterSort = value === "desc" ? "asc" : "desc";
-
+  const label = t("librarySettings.defaultChapterSort");
   return (
-    <IconButton
-      active={value === "desc"}
-      className="norea-novel-chapter-sort-button"
-      data-sort-direction={value}
-      label={`${t("librarySettings.defaultChapterSort")}: ${activeLabel}`}
-      onClick={() => onChange(nextValue)}
-      size="lg"
-    >
-      <SortIcon />
-    </IconButton>
+    <Menu position="bottom-end" returnFocus withinPortal>
+      <Menu.Target>
+        <IconButton className="norea-novel-chapter-sort-button" data-sort-direction={value} label={`${label}: ${activeLabel}`} size="lg">
+          <SortIcon />
+        </IconButton>
+      </Menu.Target>
+      <Menu.Dropdown aria-label={label}>
+        <Menu.Label>{label}</Menu.Label>
+        {DEFAULT_CHAPTER_SORT_ORDERS.map(order => (
+          <Menu.Item aria-checked={order === value} key={order} onClick={() => onChange(order)}
+            rightSection={order === value ? <CheckIcon size="1rem" /> : null} role="menuitemradio">
+            {t(DEFAULT_CHAPTER_SORT_LABEL_KEYS[order])}
+          </Menu.Item>
+        ))}
+      </Menu.Dropdown>
+    </Menu>
   );
 }

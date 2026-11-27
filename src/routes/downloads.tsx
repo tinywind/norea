@@ -26,24 +26,26 @@ export function DownloadsPage({ active = true, view }: DownloadsPageProps) {
     leaveDownloads();
     return true;
   });
-  // The two views fill the bar as underline tabs, as Browse and Library categories do.
   const viewTabs = (
-    <Tabs
-      className="norea-downloads-view-tabs"
-      onChange={(value) => {
-        void navigate({
-          to: "/downloads",
-          search: parseDownloadsSearch({ view: value }),
-          replace: true,
-        });
-      }}
-      value={view}
-    >
-      <Tabs.List aria-label={t("downloads.view.label")} className="norea-app-bar-tabs">
-        <Tabs.Tab value="queue">{t("downloads.view.queue")}</Tabs.Tab>
-        <Tabs.Tab value="storage">{t("downloads.view.storage")}</Tabs.Tab>
-      </Tabs.List>
-    </Tabs>
+    <>
+      <span aria-hidden="true" className="norea-downloads-compact-title">{t("downloads.title")}</span>
+      <Tabs
+        className="norea-downloads-view-tabs"
+        onChange={(value) => {
+          void navigate({
+            to: "/downloads",
+            search: parseDownloadsSearch({ view: value }),
+            replace: true,
+          });
+        }}
+        value={view}
+      >
+        <Tabs.List aria-label={t("downloads.view.label")} className="norea-app-bar-tabs">
+          <Tabs.Tab value="queue">{t("downloads.view.queue")}</Tabs.Tab>
+          <Tabs.Tab value="storage">{t("downloads.view.storage")}</Tabs.Tab>
+        </Tabs.List>
+      </Tabs>
+    </>
   );
 
   return view === "storage" ? (

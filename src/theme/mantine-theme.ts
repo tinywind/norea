@@ -370,6 +370,9 @@ export function createNoreaMantineTheme(
         },
         styles: { root: overlayRootStyles, overlay: scrimStyles },
       },
+      AppShell: { defaultProps: { transitionDuration: MOTION_DURATION_BASE_MS } },
+      Accordion: { defaultProps: { transitionDuration: MOTION_DURATION_BASE_MS } },
+      SegmentedControl: { defaultProps: { transitionDuration: MOTION_DURATION_BASE_MS } },
       Collapse: {
         defaultProps: {
           transitionDuration: MOTION_DURATION_BASE_MS,
@@ -389,7 +392,10 @@ export function createNoreaMantineTheme(
       ColorInput: { styles: { dropdown: overlayDropdownStyles } },
       HoverCard: { styles: { dropdown: overlayDropdownStyles } },
       Tooltip: {
-        defaultProps: { zIndex: "var(--norea-z-popover)" },
+        defaultProps: {
+          transitionProps: { duration: MOTION_DURATION_BASE_MS / 2 },
+          zIndex: "var(--norea-z-popover)",
+        },
         styles: {
           tooltip: {
             "--tooltip-bg": roles.inverseSurface,

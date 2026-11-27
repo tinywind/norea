@@ -2,7 +2,7 @@ import { Loader, Menu } from "@mantine/core";
 import { useState, type MouseEvent, type ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import { useLongPress } from "../../lib/use-long-press";
-import { AddToLibraryIcon, InLibraryIcon, OpenWorkIcon, SelectIcon } from "../ui/icons";
+import { OverflowIcon } from "../ui/icons";
 
 const LONG_PRESS_MS = 450;
 
@@ -22,11 +22,7 @@ interface QuickAddCardProps {
   selected?: boolean;
 }
 
-/**
- * A cover-grid card with RD8 quick add. A tap opens the work. Long-press,
- * right-click or the context-menu key opens "Add to library" and "Open"; with
- * a fine pointer or keyboard focus, the "+" adds it in one step.
- */
+/** A catalog card with a shared action menu on tap, long-press or right-click. */
 export function QuickAddCard({
   children,
   className,
@@ -41,13 +37,11 @@ export function QuickAddCard({
 }: QuickAddCardProps) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
-  // Where the grid supports selection, long-press and right-click enter it, as on the library.
-  const pressAction = onSelect ?? (() => setMenuOpen(true));
-  const longPress = useLongPress(disabled ? undefined : pressAction, LONG_PRESS_MS);
+  const longPress = useLongPress(disabled ? undefined : () => setMenuOpen(true), LONG_PRESS_MS);
 
   const openMenu = (event: MouseEvent) => {
     event.preventDefault();
-    if (!disabled) pressAction();
+    if (!disabled) setMenuOpen(true);
   };
 
   return (
@@ -68,47 +62,31 @@ export function QuickAddCard({
       >
         {children}
       </button>
-      {!inLibrary ? (
-        <button
-          aria-label={t("quickAdd.addNamed", { name })}
-          className="norea-quick-add-button norea-state-layer"
-          disabled={pending}
-          onClick={onAdd}
-          title={t("quickAdd.add")}
-          type="button"
-        >
-          <AddToLibraryIcon size="1.125rem" />
-        </button>
-      ) : null}
       {pending ? (
         <span aria-label={t("quickAdd.adding", { name })} className="norea-quick-add-pending" role="status">
-          <Loader size="sm" />
+          <Loader color="currentColor" size="sm" />
         </span>
       ) : null}
-      {menuOpen ? (
-        <Menu onChange={setMenuOpen} opened position="bottom" withinPortal>
-          <Menu.Target>
-            <span aria-hidden="true" className="norea-quick-add-anchor" />
-          </Menu.Target>
-          <Menu.Dropdown aria-label={name}>
-            <Menu.Item
-              disabled={inLibrary || pending}
-              leftSection={inLibrary ? <InLibraryIcon size="1.125rem" /> : <AddToLibraryIcon size="1.125rem" />}
-              onClick={onAdd}
-            >
-              {inLibrary ? t("quickAdd.inLibrary") : t("quickAdd.add")}
-            </Menu.Item>
-            <Menu.Item leftSection={<OpenWorkIcon size="1.125rem" />} onClick={onOpen}>
-              {t("quickAdd.open")}
-            </Menu.Item>
-            {onSelect ? (
-              <Menu.Item leftSection={<SelectIcon size="1.125rem" />} onClick={onSelect}>
-                {t("library.selection.start")}
-              </Menu.Item>
-            ) : null}
-          </Menu.Dropdown>
-        </Menu>
-      ) : null}
+      <Menu onChange={setMenuOpen} opened={menuOpen} position="bottom-end" returnFocus withinPortal>
+        <Menu.Target>
+          <button
+            aria-label={t("quickAdd.actionsNamed", { name })}
+            className="norea-quick-add-button norea-state-layer"
+            disabled={disabled || pending}
+            title={t("common.more")}
+            type="button"
+          >
+            <OverflowIcon />
+          </button>
+        </Menu.Target>
+        <Menu.Dropdown aria-label={name}>
+          <Menu.Item disabled={inLibrary || pending} onClick={onAdd}>
+            {inLibrary ? t("quickAdd.inLibrary") : t("quickAdd.add")}
+          </Menu.Item>
+          <Menu.Item onClick={onOpen}>{t("quickAdd.open")}</Menu.Item>
+          {onSelect ? <Menu.Item onClick={onSelect}>{t("library.selection.start")}</Menu.Item> : null}
+        </Menu.Dropdown>
+      </Menu>
     </div>
   );
 }

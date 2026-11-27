@@ -15,6 +15,7 @@ import {
   Loader,
   Skeleton,
   Text,
+  VisuallyHidden,
 } from "@mantine/core";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { ChapterCleanupPanel } from "../components/ChapterCleanupPanel";
@@ -413,21 +414,16 @@ function DownloadCacheNovelCard({
     ),
   });
   const sourceName = novel.pluginName ?? novel.pluginId;
-  const countText = [
-    t("downloads.chapterCount", {
-      cached: novel.chaptersDownloaded,
-      total: novel.totalChapters,
-    }),
-    size,
-  ].join(" · ");
-  const detailText = [
-    t("downloads.unreadRead", {
-      read: novel.readDownloaded,
-      unread: novel.unreadDownloaded,
-    }),
-    updatedLabel,
-    sourceName,
-  ].join(" / ");
+  const cached = novel.chaptersDownloaded.toLocaleString(locale);
+  const total = novel.totalChapters.toLocaleString(locale);
+  const chapterCount = t("downloads.chapterCount", { cached, total });
+  const countText = [chapterCount, size].join(" · ");
+  const readCount = t("downloads.unreadRead", {
+    read: novel.readDownloaded.toLocaleString(locale),
+    unread: novel.unreadDownloaded.toLocaleString(locale),
+  });
+  const sourceAndTime = [updatedLabel, sourceName].join(" / ");
+  const detailText = [readCount, sourceAndTime].join(" / ");
   const novelDeleting = allDeleting || deleteNovel.isPending;
   const toggleLabel = expanded ? t("downloads.collapse") : t("downloads.expand");
   const menuItems: OverflowMenuItem[] = [
@@ -494,7 +490,8 @@ function DownloadCacheNovelCard({
             component="div"
             title={detailText}
           >
-            {detailText}
+            <span className="norea-downloads-inline-read-count">{readCount} / </span>
+            {sourceAndTime}
           </Text>
           {/* Being in the library is the norm, so only the exceptions get a badge. */}
           {!novel.inLibrary || novel.mediaRepairNeededChapters > 0 ? (
@@ -522,6 +519,12 @@ function DownloadCacheNovelCard({
           ) : null}
           {readError ? <Text c="danger" size="sm">{readError}</Text> : null}
         </Box>
+        <div className="norea-downloads-count-column">
+          <VisuallyHidden>{chapterCount}</VisuallyHidden>
+          <span aria-hidden="true" title={chapterCount}>{cached} / {total}</span>
+          <small>{readCount}</small>
+        </div>
+        <span className="norea-downloads-size-column">{size}</span>
         {selectionMode ? null : (
           <Group
             className="norea-downloads-row-actions"
@@ -603,7 +606,7 @@ interface DownloadsStorageViewProps {
   active?: boolean;
   /** Leaves Downloads; the page header's back button. */
   onBack?: () => void;
-  /** The Queue and Storage tabs, drawn in the bar in place of the title. */
+  /** The shared Queue and Storage navigation in the page header. */
   viewTabs?: ReactNode;
 }
 
@@ -706,8 +709,8 @@ export function DownloadsStorageView({
     <div className="norea-downloads-subrow">
       <span className="norea-app-bar-meta norea-downloads-summary">
         {[
-          t("downloads.summary.novels", { count: totals.novels }),
-          t("downloads.summary.chapters", { count: totals.chapters }),
+          t("downloads.summary.novels", { count: totals.novels.toLocaleString(locale) }),
+          t("downloads.summary.chapters", { count: totals.chapters.toLocaleString(locale) }),
           t("downloads.summary.size", { size: totalSize }),
         ].join(" · ")}
       </span>
@@ -822,7 +825,12 @@ export function DownloadsStorageView({
             message={t("downloads.emptyFiltered.message")}
           />
         ) : (
-          <div className="norea-downloads-list">
+          <div className="norea-downloads-list" data-selecting={selectionMode ? "true" : undefined}>
+            <div className="norea-downloads-column-headings">
+              <span>{t("librarySettings.sortField.name")}</span>
+              <span>{t("novel.downloaded")}</span>
+              <span>{t("downloads.storageSize")}</span>
+            </div>
             {visibleRows.map((novel) => (
               <DownloadCacheNovelCard
                 key={novel.novelId}

@@ -1,3 +1,8 @@
+:is(span, p, input, label).norea-user-category-name {
+  --input-color: var(--norea-color-on-accent-soft);
+  color: var(--norea-color-on-accent-soft);
+}
+
 /* Zero specificity: a control that positions itself (absolute, sticky) keeps its own position. */
 :where(.norea-state-layer) {
   position: relative;
@@ -193,6 +198,21 @@
     (var(--norea-viewport-height) - var(--norea-keyboard-inset)) *
       var(--norea-sheet-fraction, 0.55)
   );
+}
+
+.mantine-Tabs-list[data-orientation="horizontal"] {
+  flex-wrap: nowrap;
+  min-inline-size: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.mantine-Tabs-list[data-orientation="horizontal"] > .mantine-Tabs-tab,
+.norea-library-category-tabs > .norea-library-category-tab {
+  flex: 0 0 auto;
+  justify-content: center;
+  min-inline-size: 5rem;
+  padding-inline: var(--norea-space-3);
 }
 
 /* Tabbed sheets keep one height, so switching tabs never resizes the sheet under the finger. */
