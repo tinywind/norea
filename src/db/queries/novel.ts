@@ -300,6 +300,7 @@ export interface NovelDetailRecord {
   statusOverride: string | null;
   /** Raw source-owned metadata preserved underneath user overrides. */
   sourceMetadata?: NovelSourceMetadata;
+  categories?: readonly LibraryNovelCategory[];
 }
 
 export async function getNovelById(

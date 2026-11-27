@@ -314,6 +314,8 @@ pub struct NovelDetailRecordDto {
     pub last_read_at: Option<i64>,
     pub status_override: Option<String>,
     pub source_metadata: NovelSourceMetadataDto,
+    #[serde(default)]
+    pub categories: Vec<LibraryNovelCategoryDto>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1581,14 +1583,26 @@ fn select_novel_detail_fields_sql() -> String {
     )
 }
 
-fn map_novel_detail_row(row: sqlx::sqlite::SqliteRow) -> NovelDetailRecordDto {
+async fn load_novel_detail_in_conn(
+    conn: &mut SqliteConnection,
+    row: Option<sqlx::sqlite::SqliteRow>,
+) -> Result<Option<NovelDetailRecordDto>, String> {
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let id: i64 = row.get("id");
+    let categories = load_library_novel_categories_in_conn(conn, &[id])
+        .await?
+        .remove(&id)
+        .unwrap_or_default();
     let plugin_id: String = row.get("pluginId");
     let raw_is_local: i64 = row.get("isLocal");
     let is_local = is_local_novel(&plugin_id, raw_is_local);
     let raw_cover: Option<String> = row.get("cover");
     let in_library_raw: i64 = row.get("inLibrary");
-    NovelDetailRecordDto {
-        id: row.get("id"),
+    Ok(Some(NovelDetailRecordDto {
+        id,
+        categories,
         source_novel_id: row.get("sourceNovelId"),
         plugin_name: row.get("pluginName"),
         path: row.get("path"),
@@ -1625,7 +1639,7 @@ fn map_novel_detail_row(row: sqlx::sqlite::SqliteRow) -> NovelDetailRecordDto {
             genres: row.get("sourceGenres"),
         },
         plugin_id,
-    }
+    }))
 }
 
 pub async fn get_novel_by_id_in_conn(
@@ -1638,7 +1652,7 @@ pub async fn get_novel_by_id_in_conn(
         .fetch_optional(&mut *conn)
         .await
         .map_err(|err| format!("db novel: get novel by id: {err}"))?;
-    Ok(row.map(map_novel_detail_row))
+    load_novel_detail_in_conn(conn, row).await
 }
 
 pub async fn find_novel_by_source_in_conn(
@@ -1656,7 +1670,7 @@ pub async fn find_novel_by_source_in_conn(
         .fetch_optional(&mut *conn)
         .await
         .map_err(|err| format!("db novel: find novel by source: {err}"))?;
-    Ok(row.map(map_novel_detail_row))
+    load_novel_detail_in_conn(conn, row).await
 }
 
 pub async fn count_novels_in_conn(conn: &mut SqliteConnection) -> Result<i64, String> {
@@ -4104,5 +4118,14 @@ mod tests {
             ]
         );
         assert!(page.novels[1].categories.is_empty());
+        for novel in &page.novels {
+            let by_id = get_novel_by_id_in_conn(&mut conn, novel.id).await.unwrap().unwrap();
+            let by_source = find_novel_by_source_in_conn(&mut conn, &novel.plugin_id, &novel.path)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(by_id.categories, novel.categories);
+            assert_eq!(by_source.categories, novel.categories);
+        }
     }
 }

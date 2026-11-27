@@ -153,11 +153,12 @@ describe("addNovelsToCategory", () => {
 });
 
 describe("work category assignments", () => {
-  it("loads manual assignments for a novel", async () => {
+  it.each(["queued", "committed"] as const)("loads manual assignments using a %s read", async (mode) => {
     mockedInvoke.mockResolvedValueOnce([12, 11]);
-    expect(await getNovelCategoryIds(1)).toEqual([12, 11]);
+    expect(await getNovelCategoryIds(1, mode)).toEqual([12, 11]);
     expect(mockedInvoke).toHaveBeenCalledWith("db_category_get_novel_ids", {
       novelId: 1,
+      mode,
     });
   });
 

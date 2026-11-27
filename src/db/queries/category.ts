@@ -144,8 +144,11 @@ export class NovelCategoryError extends Error {
   }
 }
 
-export async function getNovelCategoryIds(novelId: number): Promise<number[]> {
-  return invokeDbQuery<number[]>("db_category_get_novel_ids", { novelId });
+export async function getNovelCategoryIds(
+  novelId: number,
+  readMode: DatabaseReadMode = "queued",
+): Promise<number[]> {
+  return invokeDbQuery<number[]>("db_category_get_novel_ids", { novelId, mode: readMode });
 }
 
 export async function setNovelCategories(
