@@ -169,9 +169,11 @@ fn restore(path: &Path) -> Result<(), String> {
     let current = read_work_metadata_bytes_at(&record.root, &record.relative)?;
     let current_hash = current.as_deref().map(digest);
     if current_hash == record.previous {
-        return Ok(());
-    }
-    if current_hash != record.intended {
+        // Reads can return the .bak file between the two publication renames.
+        if record.root.join(&record.relative).is_file() {
+            return Ok(());
+        }
+    } else if current_hash != record.intended {
         return Err(format!("work metadata: '{}' changed outside the transaction. Existing files and the recovery backup were retained.", record.relative));
     }
     match record.previous {
@@ -261,6 +263,35 @@ mod tests {
             .unwrap()
             .close()
             .await;
+    }
+
+    #[tokio::test]
+    async fn interrupted_rename_restores_the_discoverable_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let database = root.join("norea.db");
+        let db = open_and_migrate_pools(&database).await.unwrap();
+        let mut journal = MetadataJournal::new(&database);
+        let tx = db.writer().begin_with("BEGIN IMMEDIATE").await.unwrap();
+
+        write_work_metadata_bytes_at(root, NOVEL, b"1").unwrap();
+        journal.record(root, NOVEL, Some(b"1"), Some(b"2")).unwrap();
+        let path = root.join(NOVEL);
+        let backup = path.with_extension("json.bak");
+        let pending = path.with_extension("json.tmp");
+        fs::write(&pending, b"2").unwrap();
+        fs::rename(&path, &backup).unwrap();
+        tx.rollback().await.unwrap();
+        db.close().await;
+
+        open_and_migrate_pools(&database)
+            .await
+            .unwrap()
+            .close()
+            .await;
+        assert_eq!(fs::read(&path).unwrap(), b"1");
+        assert!(!backup.exists());
+        assert!(!pending.exists());
     }
 
     #[tokio::test]
