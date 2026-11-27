@@ -260,6 +260,15 @@ describe("reader tap contract", () => {
     ]);
   });
 
+  it("keeps a custom menu zone active when tap paging is off", () => {
+    const { handlers, onToggleChrome, scrollByPage } = mountGestures({
+      general: { tapToScroll: false, tapZones: { ...TAP_ZONE_DEFAULTS, topCenter: "menu" } },
+    });
+    tap(handlers, ZONE_POINTS.topCenter);
+    expect(onToggleChrome).toHaveBeenCalledOnce();
+    expect(scrollByPage).not.toHaveBeenCalled();
+  });
+
   it("ignores side zones when tap paging is off", () => {
     const { handlers, scrollByPage, onToggleChrome } = mountGestures({
       general: { tapToScroll: false },

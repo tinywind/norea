@@ -144,9 +144,9 @@ it("keeps the current instance while replacement preparation is pending and drop
   expect(mocks.persist).not.toHaveBeenCalled();
 });
 
-it("wires onToggleChrome to ReaderContent only while full-page chrome can toggle", async () => {
+it("provides the menu tap to ReaderContent in normal and full-page modes", async () => {
   await harness.render(<Probe />);
-  expect(mocks.mounted.get("1:stored")!.props.onToggleChrome).toBeUndefined();
+  expect(mocks.mounted.get("1:stored")!.props.onToggleChrome).toBeTypeOf("function");
   mocks.fullPageReader = true;
   await harness.render(<Probe />);
   expect(mocks.mounted.get("1:stored")!.props.onToggleChrome).toBeTypeOf("function");

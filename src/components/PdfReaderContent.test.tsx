@@ -133,7 +133,7 @@ describe("PDF progress readiness", () => {
     vi.clearAllMocks();
   });
 
-  function mountReader({ initialProgress = 0, pageReader = false } = {}) {
+  function mountReader({ initialProgress = 0, pageReader = false, onToggleChrome = vi.fn() } = {}) {
     let resolveDocument!: (document: { numPages: number }) => void;
     let rejectDocument!: (error: Error) => void;
     const documentPromise = new Promise<{ numPages: number }>((resolve, reject) => {
@@ -155,6 +155,7 @@ describe("PDF progress readiness", () => {
     const viewport = {
       clientHeight: 300,
       clientWidth: 300,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 300, height: 300 }),
       scrollHeight: 300,
       scrollWidth: 300,
       scrollTop: 0,
@@ -169,6 +170,7 @@ describe("PDF progress readiness", () => {
       generalSettings: { ...READER_GENERAL_DEFAULTS, pageReader },
       initialProgress,
       onProgressChange,
+      onToggleChrome,
     };
     const renderComponent = (PdfReaderContent as unknown as {
       render: (props: ComponentProps<typeof PdfReaderContent>, ref: { current: ReaderContentHandle | null }) => ReactNode;
@@ -260,6 +262,26 @@ describe("PDF progress readiness", () => {
     expect(getDocument).toHaveBeenCalledTimes(2);
     expect(reader.retry()).toBeUndefined();
     expect(reader.seekbar().progress).toBe(37);
+  });
+
+  it("passes a center tap on the page canvas through to the menu", async () => {
+    class PageCanvas {
+      closest(selector: string) { return selector.split(",").includes("canvas") ? this : null; }
+    }
+    vi.stubGlobal("Element", PageCanvas);
+    const onToggleChrome = vi.fn();
+    const reader = mountReader({ onToggleChrome });
+    reader.resolveDocument({ numPages: 1 });
+    await reader.settle();
+    const event = {
+      target: new PageCanvas(), clientX: 150, clientY: 150,
+      preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    };
+    const viewport = reader.viewportNode();
+    (viewport.onClickCapture as (event: unknown) => void)(event);
+    expect(event.stopPropagation).not.toHaveBeenCalled();
+    (viewport.onClick as (event: unknown) => void)(event);
+    expect(onToggleChrome).toHaveBeenCalledOnce();
   });
 
   it("zooms the page box with the zoom controls and fits it again", async () => {

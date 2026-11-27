@@ -66,11 +66,14 @@ afterEach(async () => {
 });
 
 describe("reader chrome contract", () => {
-  it("keeps the chrome visible in normal mode and a center tap does not hide it", async () => {
+  it("opens and closes settings from a menu tap with normal mode bars pinned", async () => {
     await render({ fullPageReader: false });
     expect(chrome.readerChromeVisible).toBe(true);
     expect(chrome.readerChromeDismissible).toBe(false);
     await run(() => chrome.handleReaderMenuTap());
+    expect(chrome.readerSettingsOpen).toBe(true);
+    await run(() => chrome.handleReaderMenuTap());
+    expect(chrome.readerSettingsOpen).toBe(false);
     expect(chrome.readerChromeVisible).toBe(true);
   });
 

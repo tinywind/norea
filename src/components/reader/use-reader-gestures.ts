@@ -7,7 +7,7 @@ import {
 import {
   getNormalizedWheelDelta,
   getReaderDebugSnapshot,
-  getTapZone,
+  getReaderTapAction,
   hasReaderTextSelection,
   isInteractiveTarget,
   logReaderInput,
@@ -91,13 +91,7 @@ export function useReaderGestures({
     if (isViewportScrollbarPoint(node, rect, clientX, clientY)) return "none";
     if (chromeDismissible) return onToggleChrome ? "menu" : "none";
 
-    const zone = getTapZone(rect, clientX, clientY);
-    const action: ReaderTapAction =
-      zone === "middleCenter"
-        ? "menu"
-        : general.tapToScroll
-          ? general.tapZones[zone]
-          : "none";
+    const action = getReaderTapAction(rect, clientX, clientY, general);
     return action === "menu" && !onToggleChrome ? "none" : action;
   };
 

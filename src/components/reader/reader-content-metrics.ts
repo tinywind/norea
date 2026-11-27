@@ -1,5 +1,5 @@
 import { type WheelEvent } from "react";
-import { type ReaderTapZone } from "../../store/reader";
+import type { ReaderGeneralSettings, ReaderTapAction, ReaderTapZone } from "../../store/reader";
 import { prefersReducedMotion } from "../../theme/motion";
 import {
   isReaderInteractiveMediaTarget,
@@ -313,4 +313,15 @@ export function getTapZone(
         ? "bottom"
         : "middle";
   return `${row}${column}` as ReaderTapZone;
+}
+
+export function getReaderTapAction(
+  rect: DOMRect,
+  clientX: number,
+  clientY: number,
+  settings: Pick<ReaderGeneralSettings, "tapToScroll" | "tapZones">,
+): ReaderTapAction {
+  const zone = getTapZone(rect, clientX, clientY);
+  const action = zone === "middleCenter" ? "menu" : settings.tapZones[zone];
+  return settings.tapToScroll || action === "menu" ? action : "none";
 }

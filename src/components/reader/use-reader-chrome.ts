@@ -83,7 +83,11 @@ export function useReaderChrome({
   );
 
   const handleReaderMenuTap = useCallback(() => {
-    if (!chromeAutoHide) return;
+    if (readerStateVisible) return;
+    if (!fullPageReader || readerSettingsOpen) {
+      setReaderSettingsOpen(open => !open);
+      return;
+    }
     if (fullPageChromeVisible) {
       hideReaderChrome();
       return;
@@ -91,7 +95,9 @@ export function useReaderChrome({
     setFullPageChromeVisible(true);
     scheduleChromeHide();
   }, [
-    chromeAutoHide,
+    readerStateVisible,
+    fullPageReader,
+    readerSettingsOpen,
     fullPageChromeVisible,
     hideReaderChrome,
     scheduleChromeHide,

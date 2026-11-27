@@ -30,13 +30,13 @@ import {
   type ReaderAppearanceSettings,
   type ReaderGeneralSettings,
   type ReaderPdfPageFitMode,
-  type ReaderTapZone,
-  type ReaderTapZoneMap,
 } from "../store/reader";
 import { StateView } from "./AppFrame";
 import { MinusIcon, PlusIcon } from "./ui/icons";
 import type { ReaderContentHandle } from "./ReaderContent";
 import { ReaderSeekbars } from "./ReaderSeekbars";
+import { isInteractiveTarget, getReaderTapAction } from "./reader/reader-content-metrics";
+import { stopReaderMediaClick } from "./reader/reader-content-media";
 import {
   prefixSegmentHeights,
   virtualRangeForScroll,
@@ -99,8 +99,6 @@ const WHEEL_PAGE_DELTA_THRESHOLD = 20;
 const NATIVE_WHEEL_ACTION_LOCK_MS = 240;
 const WHEEL_DELTA_LINE = 1;
 const WHEEL_DELTA_PAGE = 2;
-const PDF_READER_MEDIA_EVENT_SELECTOR =
-  "canvas,img,picture,svg,video,audio,iframe,figure";
 const INITIAL_PDF_RENDER_BOUNDS: PdfRenderBounds = {
   width: 0,
   height: 0,
@@ -331,34 +329,6 @@ async function pdfDocumentSourceFromContent(
     : { url: resolved };
 }
 
-function isInteractiveTarget(target: EventTarget | null): boolean {
-  if (isPdfReaderMediaEventTarget(target)) return true;
-  if (!(target instanceof HTMLElement)) return false;
-  return !!target.closest(
-    "button,a,input,select,textarea,[role='button'],[role='slider']",
-  );
-}
-
-function getPdfReaderEventElement(target: EventTarget | null): Element | null {
-  if (target instanceof Element) return target;
-  if (target instanceof Node) return target.parentElement;
-  return null;
-}
-
-function isPdfReaderMediaEventTarget(target: EventTarget | null): boolean {
-  const element = getPdfReaderEventElement(target);
-  if (!element) return false;
-  if (element.closest(PDF_READER_MEDIA_EVENT_SELECTOR)) return true;
-  const link = element.closest("a");
-  return !!link?.querySelector(PDF_READER_MEDIA_EVENT_SELECTOR);
-}
-
-function stopPdfReaderMediaClick(event: MouseEvent<HTMLDivElement>): void {
-  if (!isPdfReaderMediaEventTarget(event.target)) return;
-  event.preventDefault();
-  event.stopPropagation();
-}
-
 function getNormalizedWheelDelta(event: WheelEvent<HTMLElement>): number {
   const primaryDelta =
     Math.abs(event.deltaY) >= Math.abs(event.deltaX)
@@ -369,26 +339,6 @@ function getNormalizedWheelDelta(event: WheelEvent<HTMLElement>): number {
     return primaryDelta * window.innerHeight;
   }
   return primaryDelta;
-}
-
-function getTapZoneAction(
-  rect: DOMRect,
-  clientX: number,
-  clientY: number,
-  tapZones: ReaderTapZoneMap,
-) {
-  const x = clientX - rect.left;
-  const y = clientY - rect.top;
-  const column =
-    x < rect.width / 3 ? "Left" : x > (rect.width * 2) / 3 ? "Right" : "Center";
-  const row =
-    y < rect.height / 3
-      ? "top"
-      : y > (rect.height * 2) / 3
-        ? "bottom"
-        : "middle";
-  const zone = `${row}${column}` as ReaderTapZone;
-  return zone === "middleCenter" ? "menu" : tapZones[zone];
 }
 
 function PdfPageCanvas({
@@ -1388,22 +1338,14 @@ function PdfReaderContentInner(
     }
     const node = viewportRef.current;
     if (!node) return;
-    const action = getTapZoneAction(
-      node.getBoundingClientRect(),
-      event.clientX,
-      event.clientY,
-      general.tapZones,
-    );
-    const resolvedAction =
-      general.tapToScroll || action === "menu" ? action : "none";
+    const action = getReaderTapAction(node.getBoundingClientRect(), event.clientX, event.clientY, general);
     logPdfReaderInput("tap-action", {
       action,
-      resolvedAction,
       mode: isPagedReader ? "paged" : "scroll",
       snapshot: getPdfReaderDebugSnapshot(node),
     });
 
-    switch (resolvedAction) {
+    switch (action) {
       case "previous":
         scrollByPage(-1, "tap-previous");
         break;
@@ -1565,8 +1507,8 @@ function PdfReaderContentInner(
         data-mode={isPagedReader ? "paged" : "scroll"}
         data-two-page={isTwoPageReader}
         data-zoomed={zoomed}
-        onClickCapture={stopPdfReaderMediaClick}
-        onDoubleClickCapture={stopPdfReaderMediaClick}
+        onClickCapture={stopReaderMediaClick}
+        onDoubleClickCapture={stopReaderMediaClick}
         onClick={handleClick}
         onScroll={updateProgressFromScroll}
         onTouchStart={(event) => {
