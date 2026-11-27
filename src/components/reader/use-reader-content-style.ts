@@ -16,18 +16,6 @@ const READER_PAGE_SINGLE_MEDIA_ELEMENTS = [
   "iframe",
 ] as const;
 const READER_PAGE_SINGLE_FLOW_ELEMENTS = ["p", "div", "figure", "a"] as const;
-const READER_LINE_LENGTH_CAP_REM = 40;
-const DEFAULT_ROOT_FONT_SIZE_PX = 16;
-
-function getRootFontSizePx(): number {
-  if (typeof window === "undefined" || typeof document === "undefined") {
-    return DEFAULT_ROOT_FONT_SIZE_PX;
-  }
-  const size = parseFloat(
-    window.getComputedStyle(document.documentElement).fontSize,
-  );
-  return Number.isFinite(size) && size > 0 ? size : DEFAULT_ROOT_FONT_SIZE_PX;
-}
 
 function cssSelectorList(
   prefix: string,
@@ -45,8 +33,8 @@ interface ReaderContentStyleOptions {
     | "lineHeight"
     | "textAlign"
     | "fontFamily"
-    | "padding"
-    | "customCss"
+    | "paddingHorizontal"
+    | "paddingVertical"
   >;
   viewportWidth: number;
   viewportHeightPx: number;
@@ -68,26 +56,13 @@ export function useReaderContentStyle({
       : typeof window !== "undefined"
         ? window.innerWidth
         : 0;
-  // Paged columns widen their inline padding so each text column stays within
-  // the line-length cap; custom CSS may set its own padding, so it opts out.
-  const lineLengthCapPx = READER_LINE_LENGTH_CAP_REM * getRootFontSizePx();
-  const inlinePadding =
-    isPagedReader && appearance.customCss.trim() === ""
-      ? Math.max(
-          appearance.padding,
-          Math.floor(
-            (pagedViewportWidth / Math.max(1, pageColumnsPerSpread) -
-              lineLengthCapPx) /
-              2,
-          ),
-        )
-      : appearance.padding;
+  const { paddingHorizontal, paddingVertical } = appearance;
   const contentStyle = useMemo<CSSProperties>(
     () =>
       ({
         "--norea-reader-page-media-max-height": `${Math.max(
           1,
-          viewportHeightPx - appearance.padding * 2,
+          viewportHeightPx - paddingVertical * 2,
         )}px`,
         boxSizing: "border-box",
         color: appearance.textColor,
@@ -95,32 +70,21 @@ export function useReaderContentStyle({
         lineHeight: appearance.lineHeight,
         textAlign: appearance.textAlign,
         fontFamily: appearance.fontFamily || undefined,
-        padding: `${appearance.padding}px ${inlinePadding}px`,
+        padding: `${paddingVertical}px ${paddingHorizontal}px`,
       }) as CSSProperties,
     [
       appearance.fontFamily,
       appearance.lineHeight,
-      appearance.padding,
       appearance.textAlign,
       appearance.textColor,
       appearance.textSize,
-      inlinePadding,
+      paddingHorizontal,
+      paddingVertical,
       viewportHeightPx,
     ],
   );
-  const pageColumnGap = inlinePadding * 2;
-  const pageContentWidth = Math.max(
-    1,
-    pagedViewportWidth - inlinePadding * 2,
-  );
-  const pageColumnWidth = Math.max(
-    1,
-    Math.floor(
-      pageColumnsPerSpread > 1
-        ? (pageContentWidth - pageColumnGap) / pageColumnsPerSpread
-        : pageContentWidth,
-    ),
-  );
+  const pageColumnGap = paddingHorizontal * 2;
+  const pageColumnWidth = Math.max(1, pagedViewportWidth / pageColumnsPerSpread - pageColumnGap);
   const pageStyle = useMemo<CSSProperties>(
     () =>
       isPagedReader
@@ -135,14 +99,10 @@ export function useReaderContentStyle({
             overflowY: "hidden",
           } as CSSProperties)
         : {
-            maxWidth: `calc(${READER_LINE_LENGTH_CAP_REM}rem + ${
-              appearance.padding * 2
-            }px)`,
             minHeight: "100%",
-            margin: "0 auto",
             width: "100%",
           },
-    [appearance.padding, isPagedReader, pageColumnGap, pageColumnWidth],
+    [isPagedReader, pageColumnGap, pageColumnWidth],
   );
   const contentBoxStyle = useMemo<CSSProperties>(
     () => ({
@@ -156,7 +116,7 @@ export function useReaderContentStyle({
       pageColumnsPerSpread > 1
         ? Array.from({ length: pageColumnsPerSpread - 1 }, (_, index) => {
             const dividerLeft =
-              inlinePadding +
+              paddingHorizontal +
               (index + 1) * pageColumnWidth +
               index * pageColumnGap +
               pageColumnGap / 2;
@@ -330,7 +290,7 @@ export function useReaderContentStyle({
           }
         `;
   }, [
-    inlinePadding,
+    paddingHorizontal,
     removeExtraParagraphSpacing,
     pageColumnGap,
     pageColumnWidth,

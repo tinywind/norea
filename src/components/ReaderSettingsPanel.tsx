@@ -979,16 +979,26 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
         onChange={(lineHeight) => setActiveAppearance({ lineHeight })}
       />
     ),
-    padding: (
+    paddingHorizontal: (
       <SettingSlider
-        label={t("readerSettings.padding")}
-        description={t("readerSettings.padding.description")}
-        valueLabel={`${appearance.padding}px`}
+        label={t("readerSettings.paddingHorizontal")}
+        valueLabel={`${appearance.paddingHorizontal}px`}
         min={0}
         max={64}
         step={1}
-        value={appearance.padding}
-        onChange={(padding) => setActiveAppearance({ padding })}
+        value={appearance.paddingHorizontal}
+        onChange={(paddingHorizontal) => setActiveAppearance({ paddingHorizontal })}
+      />
+    ),
+    paddingVertical: (
+      <SettingSlider
+        label={t("readerSettings.paddingVertical")}
+        valueLabel={`${appearance.paddingVertical}px`}
+        min={0}
+        max={64}
+        step={1}
+        value={appearance.paddingVertical}
+        onChange={(paddingVertical) => setActiveAppearance({ paddingVertical })}
       />
     ),
     font: (
@@ -1371,7 +1381,8 @@ export function ReaderSettingsPanel({
                 {fields.textColor}
                 {fields.textSize}
                 {fields.lineHeight}
-                {fields.padding}
+                {fields.paddingHorizontal}
+                {fields.paddingVertical}
                 {fields.font}
                 {fields.alignment}
                 {fields.themeActions}
@@ -1461,7 +1472,7 @@ function SettingSlider({
   onChange,
 }: {
   label: string;
-  description: string;
+  description?: string;
   valueLabel: string;
   min: number;
   max: number;
@@ -1474,6 +1485,7 @@ function SettingSlider({
       <div className="norea-settings-slider-control">
         <Text className="norea-settings-slider-value">{valueLabel}</Text>
         <Slider
+          thumbLabel={label}
           min={min}
           max={max}
           step={step}

@@ -48,6 +48,7 @@ import {
   getEffectiveReaderGeneralSettings,
   READER_APPEARANCE_DEFAULTS,
   READER_CHAPTER_SCROLL_ANCHOR_LIMIT,
+  READER_CUSTOM_CSS_PRESETS,
   READER_GENERAL_DEFAULTS,
   READER_PRESET_THEMES,
   READER_TAP_PRESETS,
@@ -98,6 +99,54 @@ describe("useReaderStore", () => {
     expect(
       useReaderStore.getState().general.autoDownloadNextChapter,
     ).toBe(true);
+  });
+
+  it("restores the old padding on both axes for global, source and novel settings", async () => {
+    localStorageHarness.values.set("reader-settings", JSON.stringify({
+      version: 0,
+      state: {
+        appearance: { padding: 23 },
+        readerSettingsBySource: { source: { enabled: true, appearance: { padding: 0 } } },
+        readerSettingsByNovel: { 7: { enabled: false, appearance: { padding: 32, paddingVertical: 8 } } },
+      },
+    }));
+
+    await useReaderStore.persist.rehydrate();
+
+    const state = useReaderStore.getState();
+    expect(state.appearance).toMatchObject({ paddingHorizontal: 23, paddingVertical: 23 });
+    expect(state.appearance).not.toHaveProperty("padding");
+    expect(state.readerSettingsBySource.source?.appearance).toEqual({ paddingHorizontal: 0, paddingVertical: 0 });
+    expect(state.readerSettingsByNovel[7]).toEqual({
+      enabled: false, appearance: { paddingHorizontal: 32, paddingVertical: 8 },
+    });
+    state.setAppearance({ paddingVertical: 5 });
+    expect(JSON.parse(localStorageHarness.values.get("reader-settings")!).state.appearance)
+      .toMatchObject({ paddingHorizontal: 23, paddingVertical: 5 });
+    expect(localStorageHarness.values.get("reader-settings")).not.toContain('"padding":');
+  });
+
+  it("inherits and persists each padding axis independently", async () => {
+    const state = useReaderStore.getState();
+    state.setAppearance({ paddingHorizontal: 65, paddingVertical: -1 });
+    state.setSourceAppearance("source", { paddingVertical: 6.8 });
+    state.setNovelAppearance(7, { paddingHorizontal: 0 });
+
+    await useReaderStore.persist.rehydrate();
+
+    const { appearance, readerSettingsBySource, readerSettingsByNovel } = useReaderStore.getState();
+    expect(appearance).toMatchObject({ paddingHorizontal: 64, paddingVertical: 0 });
+    expect(readerSettingsBySource.source?.appearance).toEqual({ paddingVertical: 7 });
+    expect(readerSettingsByNovel[7]?.appearance).toEqual({ paddingHorizontal: 0 });
+    expect(getEffectiveReaderAppearanceSettings(appearance, readerSettingsBySource.source, readerSettingsByNovel[7]))
+      .toMatchObject({ paddingHorizontal: 0, paddingVertical: 7 });
+  });
+
+  it("lets the reader adjust both margins after applying a full-bleed preset", () => {
+    for (const preset of READER_CUSTOM_CSS_PRESETS.filter((item) => item.appearance)) {
+      expect(preset.appearance).toEqual({ paddingHorizontal: 0, paddingVertical: 0 });
+      expect(preset.css).not.toMatch(/\.reader-content\s*\{[^}]*\b(?:padding|column-gap)\s*:/);
+    }
   });
 
   it("setGeneral merges pageReader without dropping other fields", () => {

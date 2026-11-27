@@ -27,7 +27,8 @@ export function ReaderSection() {
         {fields.textColor}
         {fields.textSize}
         {fields.lineHeight}
-        {fields.padding}
+        {fields.paddingHorizontal}
+        {fields.paddingVertical}
         {fields.font}
         {fields.alignment}
         {fields.themeActions}

@@ -162,6 +162,28 @@ it("turns a novel override on from the effective values when choosing This novel
   expect(effectiveTextSize()).toBe(30);
 });
 
+it("steps each text margin independently in the selected scope", () => {
+  useReaderStore.getState().setAppearance({ paddingHorizontal: 14, paddingVertical: 37 });
+  scopeItem(renderQuick(), SCOPE_LABELS.novel).props.onClick!();
+
+  const step = (label: string, direction: "increase" | "decrease") => {
+    const stepper = renderQuick().find((element) => element.props.label === label)!;
+    const controls = elements((stepper.type as (props: unknown) => ReactNode)(stepper.props));
+    controls.find((element) => element.props.label === `readerSettings.stepper.${direction}`)!.props.onClick!();
+  };
+  step("readerSettings.paddingHorizontal", "increase");
+  step("readerSettings.paddingVertical", "decrease");
+
+  const state = useReaderStore.getState();
+  expect(state.readerSettingsByNovel[readerTarget.novelId]?.appearance).toMatchObject({
+    paddingHorizontal: 16, paddingVertical: 35,
+  });
+  expect(state.appearance).toMatchObject({ paddingHorizontal: 14, paddingVertical: 37 });
+  const pdf = renderQuick({ kind: "pdf", hasImages: false });
+  expect(hasLabel(pdf, "readerSettings.paddingHorizontal")).toBe(false);
+  expect(hasLabel(pdf, "readerSettings.paddingVertical")).toBe(false);
+});
+
 it("turns a source override on when choosing This source", () => {
   scopeItem(renderQuick(), SCOPE_LABELS.source).props.onClick!();
 

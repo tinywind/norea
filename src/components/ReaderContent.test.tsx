@@ -175,13 +175,15 @@ describe("prepared layout invalidation", () => {
     capture();
     mocks.width = 600; capture();
     capture({ appearanceSettings: { ...mocks.appearance, fontFamily: "Other Font" } });
+    capture({ appearanceSettings: { ...mocks.appearance, paddingHorizontal: 28 } });
+    capture({ appearanceSettings: { ...mocks.appearance, paddingVertical: 28 } });
     capture({ appearanceSettings: { ...mocks.appearance, customCss: ".reader-content { letter-spacing: 1px }" } });
     capture({ generalSettings: { ...mocks.general, bionicReading: true } });
     capture({ generalSettings: { ...mocks.general, removeExtraParagraphSpacing: !mocks.general.removeExtraParagraphSpacing } });
     capture({ generalSettings: { ...mocks.general, pageReader: true } });
     mocks.height = 900; capture({ generalSettings: { ...mocks.general, pageReader: true } });
     mocks.revision += 1; capture({ generalSettings: { ...mocks.general, pageReader: true } });
-    expect(keys.size).toBe(9);
+    expect(keys.size).toBe(11);
   });
 
   it("excludes media/font layout revisions in scroll mode and only enables layout revision tracking in paged mode", () => {

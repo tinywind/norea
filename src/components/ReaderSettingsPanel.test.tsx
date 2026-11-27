@@ -91,6 +91,19 @@ beforeEach(() => {
   useReaderStore.getState().resetReaderSettings();
 });
 
+it("updates each page margin without changing the other slider", () => {
+  useReaderStore.getState().setAppearance({ paddingHorizontal: 14, paddingVertical: 37 });
+  const slider = (label: string) => renderGlobalPanel().find((element) => element.props.label === label)!.props;
+
+  expect(slider("readerSettings.paddingHorizontal").value).toBe(14);
+  expect(slider("readerSettings.paddingVertical").value).toBe(37);
+  (slider("readerSettings.paddingHorizontal").onChange as (value: number) => void)(18);
+  expect(slider("readerSettings.paddingVertical").value).toBe(37);
+  (slider("readerSettings.paddingVertical").onChange as (value: number) => void)(4);
+
+  expect(useReaderStore.getState().appearance).toMatchObject({ paddingHorizontal: 18, paddingVertical: 4 });
+});
+
 it("asks for confirmation and keeps scoped settings when resetting global settings", () => {
   useReaderStore.getState().setAppearance({ textSize: 26 });
   useReaderStore.getState().setNovelAppearance(readerTarget.novelId, { textSize: 30 });

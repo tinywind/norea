@@ -37,6 +37,8 @@ const SCOPE_LABEL_KEYS: Record<ReaderSettingsScopeKind, TranslationKey> = {
   novel: "readerSettings.scope.applyToNovel",
 };
 
+const READER_PADDING_FIELDS = ["paddingHorizontal", "paddingVertical"] as const;
+
 const MORE_SETTINGS_SECTIONS: Array<{
   value: ReaderMoreSettingsSection;
   labelKey: TranslationKey;
@@ -196,16 +198,19 @@ export function ReaderQuickSettings({ content, target }: ReaderQuickSettingsProp
           value={appearance.lineHeight}
           valueLabel={appearance.lineHeight.toFixed(1)}
         />
-        <SettingStepper
-          editor={editor}
-          label={t("readerSettings.quickPadding")}
-          max={64}
-          min={0}
-          onChange={(padding) => editor.setActiveAppearance({ padding })}
-          step={2}
-          value={appearance.padding}
-          valueLabel={`${appearance.padding}`}
-        />
+        {content.kind === "html" && READER_PADDING_FIELDS.map((field) => (
+          <SettingStepper
+            key={field}
+            editor={editor}
+            label={t(`readerSettings.${field}`)}
+            max={64}
+            min={0}
+            onChange={(value) => editor.setActiveAppearance({ [field]: value })}
+            step={2}
+            value={appearance[field]}
+            valueLabel={`${appearance[field]}px`}
+          />
+        ))}
         <SettingsSection>
           {fields.font}
           {fields.alignment}

@@ -53,7 +53,7 @@ export interface ReaderCustomCssPreset {
       "pageReader" | "twoPageReader" | "htmlImagePagingMode"
     >
   >;
-  appearance?: Partial<Pick<ReaderAppearanceSettings, "padding">>;
+  appearance?: Partial<Pick<ReaderAppearanceSettings, "paddingHorizontal" | "paddingVertical">>;
   css: string;
 }
 
@@ -68,7 +68,6 @@ function createWebtoonStripCss(mediaMargin: string): string {
   return `.reader-content {
   max-width: none !important;
   width: 100% !important;
-  padding: 0 !important;
 }
 
 .reader-content :where(p, figure, a),
@@ -160,7 +159,8 @@ export interface ReaderAppearanceSettings {
   textColor: string;
   textSize: number;
   textAlign: ReaderTextAlign;
-  padding: number;
+  paddingHorizontal: number;
+  paddingVertical: number;
   fontFamily: string;
   lineHeight: number;
   customCss: string;
@@ -378,7 +378,8 @@ export const READER_CUSTOM_CSS_PRESETS: ReaderCustomCssPreset[] = [
       htmlImagePagingMode: "auto",
     },
     appearance: {
-      padding: 0,
+      paddingHorizontal: 0,
+      paddingVertical: 0,
     },
     css: WEBTOON_STRIP_CSS,
   },
@@ -390,7 +391,8 @@ export const READER_CUSTOM_CSS_PRESETS: ReaderCustomCssPreset[] = [
       htmlImagePagingMode: "auto",
     },
     appearance: {
-      padding: 0,
+      paddingHorizontal: 0,
+      paddingVertical: 0,
     },
     css: WEBTOON_STRIP_SPACED_CSS,
   },
@@ -402,16 +404,12 @@ export const READER_CUSTOM_CSS_PRESETS: ReaderCustomCssPreset[] = [
       htmlImagePagingMode: "single-image",
     },
     appearance: {
-      padding: 0,
+      paddingHorizontal: 0,
+      paddingVertical: 0,
     },
     css: `.reader-content {
   max-width: none !important;
   width: 100% !important;
-  padding: 0 !important;
-}
-
-.reader-viewport-paged .reader-content {
-  column-gap: 0 !important;
 }
 
 .reader-content > :where(p, div, figure, a) {
@@ -446,16 +444,12 @@ export const READER_CUSTOM_CSS_PRESETS: ReaderCustomCssPreset[] = [
       htmlImagePagingMode: "single-image",
     },
     appearance: {
-      padding: 0,
+      paddingHorizontal: 0,
+      paddingVertical: 0,
     },
     css: `.reader-content {
   max-width: none !important;
   width: 100% !important;
-  padding: 0 !important;
-}
-
-.reader-viewport-paged .reader-content {
-  column-gap: 0 !important;
 }
 
 .reader-content > :where(p, div, figure, a) {
@@ -523,7 +517,8 @@ const READER_APPEARANCE_OVERRIDE_KEYS: Array<
   "textColor",
   "textSize",
   "textAlign",
-  "padding",
+  "paddingHorizontal",
+  "paddingVertical",
   "fontFamily",
   "lineHeight",
   "customCss",
@@ -649,7 +644,8 @@ export const READER_APPEARANCE_DEFAULTS: ReaderAppearanceSettings = {
   textColor: DEFAULT_READER_THEME.textColor,
   textSize: 16,
   textAlign: "left",
-  padding: 16,
+  paddingHorizontal: 16,
+  paddingVertical: 16,
   fontFamily: "",
   lineHeight: 1.5,
   customCss: "",
@@ -780,16 +776,22 @@ function normalizeTapZones(
   return next;
 }
 
-function normalizeAppearance(
-  settings: Partial<ReaderAppearanceSettings>,
-): Partial<ReaderAppearanceSettings> {
+function normalizeAppearance({
+  padding,
+  paddingHorizontal = padding,
+  paddingVertical = padding,
+  ...settings
+}: Partial<ReaderAppearanceSettings> & { padding?: number }): Partial<ReaderAppearanceSettings> {
   return {
     ...settings,
     ...(settings.textSize !== undefined
       ? { textSize: Math.round(clamp(settings.textSize, 12, 36)) }
       : {}),
-    ...(settings.padding !== undefined
-      ? { padding: Math.round(clamp(settings.padding, 0, 64)) }
+    ...(paddingHorizontal !== undefined
+      ? { paddingHorizontal: Math.round(clamp(paddingHorizontal, 0, 64)) }
+      : {}),
+    ...(paddingVertical !== undefined
+      ? { paddingVertical: Math.round(clamp(paddingVertical, 0, 64)) }
       : {}),
     ...(settings.lineHeight !== undefined
       ? { lineHeight: clamp(settings.lineHeight, 1, 2.6) }
@@ -1615,10 +1617,7 @@ export const useReaderStore = create<ReaderState>()(
           : {};
         const appearance = {
           ...READER_APPEARANCE_DEFAULTS,
-          ...normalizeAppearance({
-            ...READER_APPEARANCE_DEFAULTS,
-            ...persistedAppearance,
-          }),
+          ...normalizeAppearance(persistedAppearance),
         };
 
         return {
