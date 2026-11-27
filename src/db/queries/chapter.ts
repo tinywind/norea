@@ -319,21 +319,25 @@ export async function setChaptersReadState(
   });
 }
 
-/** Marks every chapter of the given novels read or unread and captures the chapters it changed. */
+interface NovelReadStateMutationResult extends BulkChapterMutationResult {
+  previous: ChapterReadState[];
+  confirmationChapterCount?: number;
+}
+
+/** Returns the required count without writing when the number of affected chapters exceeds maxChanges. */
 export async function setNovelsReadState(
   novelIds: readonly number[],
   unread: boolean,
-): Promise<BulkChapterMutationResult & { previous: ChapterReadState[] }> {
+  maxChanges?: number,
+): Promise<NovelReadStateMutationResult> {
   const uniqueNovelIds = Array.from(new Set(novelIds)).filter(
     (novelId) => Number.isInteger(novelId) && novelId > 0,
   );
   if (uniqueNovelIds.length === 0) {
     return { rowsAffected: 0, chunks: 0, previous: [] };
   }
-  return invokeDbMutation<
-    BulkChapterMutationResult & { previous: ChapterReadState[] }
-  >("db_chapter_set_novels_read_state", {
-    input: { novelIds: uniqueNovelIds, unread },
+  return invokeDbMutation<NovelReadStateMutationResult>("db_chapter_set_novels_read_state", {
+    input: { novelIds: uniqueNovelIds, unread, ...(maxChanges === undefined ? {} : { maxChanges }) },
   });
 }
 

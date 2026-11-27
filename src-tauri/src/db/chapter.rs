@@ -207,6 +207,15 @@ pub struct BulkReadStateMutationResultDto {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct NovelReadStateMutationResultDto {
+    #[serde(flatten)]
+    pub mutation: BulkReadStateMutationResultDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_chapter_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RelativeReadStateMutationResultDto {
     pub rows_affected: u64,
     pub previous: Vec<ChapterReadStateDto>,
@@ -235,6 +244,7 @@ pub struct SetChaptersReadStateInputDto {
 pub struct SetNovelsReadStateInputDto {
     pub novel_ids: Vec<i64>,
     pub unread: bool,
+    pub max_changes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1590,7 +1600,8 @@ pub async fn set_novels_read_state_in_tx(
     ctx: &mut TxContext,
     novel_ids: &[i64],
     unread: bool,
-) -> Result<BulkReadStateMutationResultDto, String> {
+    max_changes: Option<u64>,
+) -> Result<NovelReadStateMutationResultDto, String> {
     let mut unique_ids = Vec::new();
     let mut seen = HashSet::new();
     for &id in novel_ids {
@@ -1598,15 +1609,36 @@ pub async fn set_novels_read_state_in_tx(
             unique_ids.push(id);
         }
     }
-    if unique_ids.is_empty() {
-        return Ok(BulkReadStateMutationResultDto {
-            rows_affected: 0,
-            chunks: 0,
-            previous: Vec::new(),
-        });
-    }
-
     let progress: f64 = if unread { 0.0 } else { FINISHED_PROGRESS };
+    let mut changed_count = 0u64;
+    if let Some(limit) = max_changes {
+        for chunk in unique_ids.chunks(CHAPTER_ID_CHUNK_SIZE) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT COUNT(*) FROM chapter WHERE progress <> ? AND novel_id IN ({placeholders})"
+            );
+            let mut query = sqlx::query_scalar::<_, i64>(AssertSqlSafe(sql)).bind(progress);
+            for id in chunk {
+                query = query.bind(*id);
+            }
+            changed_count += query
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(|err| format!("db chapter: count read state changes: {err}"))? as u64;
+        }
+        if changed_count > limit {
+            return Ok(NovelReadStateMutationResultDto {
+                mutation: BulkReadStateMutationResultDto {
+                    rows_affected: 0,
+                    chunks: 0,
+                    previous: Vec::new(),
+                },
+                confirmation_chapter_count: Some(changed_count),
+            });
+        }
+    }
+    let capture_previous =
+        max_changes.is_none() || changed_count <= MAX_CHAPTER_BULK_INPUT_ROWS as u64;
     let mut rows_affected = 0u64;
     let mut chunks = 0usize;
     let mut previous = Vec::new();
@@ -1615,23 +1647,25 @@ pub async fn set_novels_read_state_in_tx(
         let novel_placeholders: Vec<String> =
             (1..=chunk.len()).map(|i| format!("?{}", i + 1)).collect();
         let in_clause = novel_placeholders.join(", ");
-        let select_sql = format!(
-            "SELECT id, progress FROM chapter \
-             WHERE novel_id IN ({in_clause}) AND progress <> ?1"
-        );
-        let mut sel_q = sqlx::query(AssertSqlSafe(select_sql)).bind(progress);
-        for id in chunk {
-            sel_q = sel_q.bind(*id);
-        }
-        let rows = sel_q
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|err| format!("db chapter: select novel previous read states: {err}"))?;
-        for r in rows {
-            previous.push(ChapterReadStateDto {
-                id: r.get("id"),
-                progress: decode_sqlite_f64(&r, "progress"),
-            });
+        if capture_previous {
+            let select_sql = format!(
+                "SELECT id, progress FROM chapter \
+                 WHERE novel_id IN ({in_clause}) AND progress <> ?1"
+            );
+            let mut sel_q = sqlx::query(AssertSqlSafe(select_sql)).bind(progress);
+            for id in chunk {
+                sel_q = sel_q.bind(*id);
+            }
+            let rows = sel_q
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|err| format!("db chapter: select novel previous read states: {err}"))?;
+            for r in rows {
+                previous.push(ChapterReadStateDto {
+                    id: r.get("id"),
+                    progress: decode_sqlite_f64(&r, "progress"),
+                });
+            }
         }
 
         let update_sql = format!(
@@ -1651,11 +1685,16 @@ pub async fn set_novels_read_state_in_tx(
         chunks += 1;
     }
 
-    record_novel_chapters_in_tx(conn, ctx, Some(&unique_ids)).await?;
-    Ok(BulkReadStateMutationResultDto {
-        rows_affected,
-        chunks,
-        previous,
+    if rows_affected > 0 {
+        record_novel_chapters_in_tx(conn, ctx, Some(&unique_ids)).await?;
+    }
+    Ok(NovelReadStateMutationResultDto {
+        mutation: BulkReadStateMutationResultDto {
+            rows_affected,
+            chunks,
+            previous,
+        },
+        confirmation_chapter_count: None,
     })
 }
 
@@ -4077,13 +4116,14 @@ pub async fn db_chapter_set_novels_read_state(
     app: AppHandle,
     db: State<'_, AppDatabase>,
     input: SetNovelsReadStateInputDto,
-) -> Result<DbMutationEnvelope<BulkReadStateMutationResultDto>, String> {
+) -> Result<DbMutationEnvelope<NovelReadStateMutationResultDto>, String> {
     with_write_tx(
         db.writer(),
         TxOptions::with_app_metadata(app),
         move |conn, ctx| {
             Box::pin(async move {
-                set_novels_read_state_in_tx(conn, ctx, &input.novel_ids, input.unread).await
+                set_novels_read_state_in_tx(conn, ctx, &input.novel_ids, input.unread, input.max_changes)
+                    .await
             })
         },
     )
@@ -4769,6 +4809,14 @@ mod tests {
                     },
                 )
                 .await?;
+                let blocked = set_novels_read_state_in_tx(conn, ctx, &[1, 1], false, Some(1)).await?;
+                assert_eq!(blocked.confirmation_chapter_count, Some(2));
+                assert_eq!(blocked.mutation.rows_affected, 0);
+                let approved = set_novels_read_state_in_tx(conn, ctx, &[1], false, Some(2)).await?;
+                assert_eq!(approved.confirmation_chapter_count, None);
+                assert_eq!(approved.mutation.rows_affected, 2);
+                restore_chapter_read_states_in_tx(conn, ctx, &approved.mutation.previous).await?;
+
                 // Reopening a finished chapter at 35% without allow_progress_reset keeps progress at 100%.
                 update_chapter_progress_in_tx(
                     conn,
