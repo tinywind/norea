@@ -57,6 +57,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.rust-target }}
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -102,6 +103,15 @@ jobs:
 
       - name: Build Windows app without publishing
         run: pnpm tauri build --target ${{ matrix.rust-target }} --no-bundle
+
+      - name: Check Rust formatting and Clippy correctness on Windows x64
+        if: matrix.platform == 'windows-x64'
+        working-directory: src-tauri
+        shell: pwsh
+        run: |
+          rustfmt --edition 2021 --check src/db/tx/metadata_journal.rs src/db/work_metadata/document.rs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --lib --locked --target ${{ matrix.rust-target }} --no-deps -- -D clippy::correctness
 
       - name: Run Rust unit tests on Windows x64
         if: matrix.platform == 'windows-x64'

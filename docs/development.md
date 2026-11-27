@@ -60,9 +60,16 @@ pnpm hooks:install
 Use the smallest relevant check for the change.
 
 ```bash
+pnpm lint
+pnpm format:check
 pnpm tsc
 pnpm test
 ```
+
+The hook and frontend CI run the pinned Biome correctness rules across
+TypeScript and build scripts. Formatting starts with the files named in
+`format:check`. Windows x64 CI runs Clippy correctness checks on the app
+library and rustfmt on the metadata journal and document parser.
 
 Run `pnpm tauri build --debug` on Windows when the change touches native
 desktop integration.

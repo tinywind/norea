@@ -66,7 +66,7 @@ jobs:
               pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_DIR"
             '
 
-      - name: Type check
+      - name: Lint, formatting, and type checks
         run: |
           set -euo pipefail
           docker run --rm --user "$(id -u):$(id -g)" \
@@ -79,6 +79,8 @@ jobs:
             "$NODE_IMAGE" \
             bash -euo pipefail -c '
               export PATH="/pnpm-global/bin:$PATH"
+              pnpm lint
+              pnpm format:check
               pnpm tsc
             '
 
