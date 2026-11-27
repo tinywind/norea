@@ -105,6 +105,20 @@ afterAll(() => {
 });
 
 describe("library entry lifecycle", () => {
+  it("opens a work's tag across the whole library despite previous filters", () => {
+    useLibraryStore.setState({
+      defaultCategoryId: 7, selectedCategoryId: 9, selectedSourceId: "previous",
+      search: "old", selectedTags: ["Old"], selectedStatuses: ["Completed"], unreadOnlyMode: true,
+    });
+    useLibraryStore.getState().showTagInLibrary("Fantasy");
+    renderLibrary(true);
+    expect(useLibraryStore.getState()).toMatchObject({
+      defaultCategoryId: 7, selectedCategoryId: null, selectedSourceId: null,
+      search: "", selectedTags: ["Fantasy"], selectedStatuses: [], unreadOnlyMode: false,
+    });
+    useLibraryStore.getState().clearFilters();
+  });
+
   it("applies the saved default only on the first active library visit", () => {
     useLibraryStore.getState().setDefaultCategoryId(7);
     renderLibrary(false);

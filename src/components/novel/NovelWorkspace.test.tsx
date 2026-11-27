@@ -39,7 +39,7 @@ const props: ComponentProps<typeof NovelWorkspace> = {
     createdAt: 1, updatedAt: 1, libraryAddedAt: null, lastReadAt: null, statusOverride: null,
   },
   chapters: [], downloadStatuses: new Map(), lastReadChapterId: undefined, libraryBusy: false,
-  onRead: vi.fn(), onSelectChapters: vi.fn(), onToggleLibrary: vi.fn(), sourceName: "Source",
+  onRead: vi.fn(), onSelectChapters: vi.fn(), onSelectGenre: vi.fn(), onToggleLibrary: vi.fn(), sourceName: "Source",
 };
 
 function render(overrides: Partial<ComponentProps<typeof NovelWorkspace>> = {}) {
@@ -48,6 +48,14 @@ function render(overrides: Partial<ComponentProps<typeof NovelWorkspace>> = {}) 
 
 const buttonTexts = ($: ReturnType<typeof render>) =>
   $("button").map((_, button) => $(button).text()).get();
+
+it("renders the work's tags as buttons beneath its summary", () => {
+  const $ = render({ novel: { ...props.novel, summary: "Synopsis", genres: "#Fantasy, #Romance" } });
+  const summary = $(".norea-novel-summary-text");
+  expect(summary.text()).toBe("Synopsis");
+  expect(summary.next().find("li > button").map((_, button) => $(button).text()).get())
+    .toEqual(["Fantasy", "Romance"]);
+});
 
 it("does not expose original-site covers for a server-bound work", () => {
   expect(render().html()).not.toContain("https://original.test/cover.jpg");

@@ -62,12 +62,24 @@ function sanitizeTagList(raw: unknown): string[] {
   return tags;
 }
 
+const CLEARED_LIBRARY_FILTERS = {
+  selectedSourceId: null,
+  downloadedOnlyMode: false,
+  unreadOnlyMode: false,
+  localOnlyMode: false,
+  completedOnlyMode: false,
+  repairNeededOnlyMode: false,
+  selectedStatuses: [],
+  selectedTags: [],
+};
+
 interface LibraryState {
   pendingLocalImportFiles: readonly File[];
   selectedCategoryId: number | null;
   defaultCategoryId: number | null;
   librarySessionInitialized: boolean;
   search: string;
+  selectedSourceId: string | null;
   displayMode: LibraryDisplayMode;
   novelsPerRow: number;
   sortOrder: LibrarySortOrder;
@@ -94,6 +106,8 @@ interface LibraryState {
   setDefaultCategoryId: (id: number | null) => void;
   enterLibrary: () => void;
   setSearch: (search: string) => void;
+  setSelectedSourceId: (id: string | null) => void;
+  showTagInLibrary: (tag: string) => void;
   setDisplayMode: (displayMode: LibraryDisplayMode) => void;
   setNovelsPerRow: (novelsPerRow: number) => void;
   setSortOrder: (sortOrder: LibrarySortOrder) => void;
@@ -134,13 +148,7 @@ export const useLibraryStore = create<LibraryState>()(
       showNumberBadges: false,
       showContinueReading: true,
       continueReadingCollapsed: false,
-      downloadedOnlyMode: false,
-      unreadOnlyMode: false,
-      localOnlyMode: false,
-      completedOnlyMode: false,
-      repairNeededOnlyMode: false,
-      selectedStatuses: [],
-      selectedTags: [],
+      ...CLEARED_LIBRARY_FILTERS,
       incognitoMode: false,
       defaultChapterSort: "asc",
       checkIntervalHours: DEFAULT_CHECK_INTERVAL_HOURS,
@@ -166,6 +174,14 @@ export const useLibraryStore = create<LibraryState>()(
         });
       },
       setSearch: (search) => set({ search }),
+      setSelectedSourceId: (selectedSourceId) => set({ selectedSourceId }),
+      showTagInLibrary: (tag) => set({
+        ...CLEARED_LIBRARY_FILTERS,
+        selectedTags: sanitizeTagList([tag]),
+        search: "",
+        selectedCategoryId: null,
+        librarySessionInitialized: true,
+      }),
       setDisplayMode: (displayMode) => set({ displayMode }),
       setNovelsPerRow: (novelsPerRow) =>
         set({ novelsPerRow: Math.max(1, Math.min(5, novelsPerRow)) }),
@@ -220,16 +236,7 @@ export const useLibraryStore = create<LibraryState>()(
           };
         });
       },
-      clearFilters: () =>
-        set({
-          downloadedOnlyMode: false,
-          unreadOnlyMode: false,
-          localOnlyMode: false,
-          completedOnlyMode: false,
-          repairNeededOnlyMode: false,
-          selectedStatuses: [],
-          selectedTags: [],
-        }),
+      clearFilters: () => set(CLEARED_LIBRARY_FILTERS),
       setIncognitoMode: (incognitoMode) => set({ incognitoMode }),
       setDefaultChapterSort: (defaultChapterSort) =>
         set({ defaultChapterSort }),

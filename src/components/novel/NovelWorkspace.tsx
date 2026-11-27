@@ -54,6 +54,7 @@ interface NovelWorkspaceProps {
   /** Offline state of a novel with a download goal in effect, as its library card shows it. */
   offlineState?: DownloadGoalOfflineState;
   onRead: (chapter: ChapterListRow, options?: { fromStart?: boolean }) => void;
+  onSelectGenre: (genre: string) => void;
   /** Starts chapter selection for a one-time download. */
   onSelectChapters: () => void;
   onToggleLibrary: () => void;
@@ -85,6 +86,7 @@ export function NovelWorkspace({
   novel,
   offlineState,
   onRead,
+  onSelectGenre,
   onSelectChapters,
   onToggleLibrary,
   sourceName,
@@ -211,7 +213,7 @@ export function NovelWorkspace({
         ) : null}
       </div>
 
-      <NovelSummary genres={genres} summary={novel.summary} />
+      <NovelSummary genres={genres} onSelectGenre={onSelectGenre} summary={novel.summary} />
 
       {novel.isLocal ? null : (
         <NovelDownloadSheet
@@ -230,9 +232,11 @@ export function NovelWorkspace({
 
 function NovelSummary({
   genres,
+  onSelectGenre,
   summary,
 }: {
   genres: readonly string[];
+  onSelectGenre: (genre: string) => void;
   summary: string | null;
 }) {
   const { t } = useTranslation();
@@ -267,7 +271,13 @@ function NovelSummary({
         <div className="norea-novel-summary-footer">
           {genres.length > 0 ? (
             <ul aria-label={t("library.tags.title")} className="norea-novel-genres" id={genresId} ref={genresRef}>
-              {genres.map(genre => <li className="norea-novel-genre" key={genre}>{genre}</li>)}
+              {genres.map(genre => (
+                <li key={genre}>
+                  <button className="norea-novel-genre" onClick={() => onSelectGenre(genre)} type="button">
+                    {genre}
+                  </button>
+                </li>
+              ))}
             </ul>
           ) : null}
           {overflowing || expanded ? (

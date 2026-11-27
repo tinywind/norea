@@ -277,8 +277,13 @@
   white-space: pre-wrap;
 }
 
-.norea-novel-summary[data-expanded="true"] .norea-novel-genres {
+.norea-novel-summary[data-expanded="true"] .norea-novel-genres,
+.norea-novel-genres:focus-within {
   max-height: none;
+}
+
+.norea-novel-genres > li {
+  max-width: 100%;
 }
 
 .norea-novel-genre {
@@ -286,6 +291,9 @@
   border: 1px solid var(--norea-color-rule);
   border-radius: var(--norea-radius-full);
   color: var(--norea-color-ink);
+  cursor: pointer;
+  display: block;
+  font-family: inherit;
   font-size: var(--norea-text-xs);
   font-weight: var(--norea-weight-medium);
   line-height: 1.5rem;
@@ -296,10 +304,73 @@
   white-space: nowrap;
 }
 
+.norea-novel-genre:focus-visible {
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
+  outline-offset: calc(-1 * var(--norea-focus-width));
+}
+
 .norea-novel-summary-toggle {
   align-self: flex-start;
   flex: 0 0 auto;
   margin-left: auto;
+}
+
+.norea-novel-info-pane {
+  container: novel-info / inline-size;
+}
+
+@container novel-info (min-width: 36rem) {
+  .norea-novel-hero:has(> .norea-novel-summary) {
+    column-gap: var(--norea-space-4);
+    display: grid;
+    grid-template-columns: clamp(9rem, 22cqi, 10rem) minmax(0, 1fr);
+    grid-template-rows: max-content minmax(4.5rem, 1fr);
+  }
+
+  .norea-novel-hero:has(> .norea-novel-summary) > .norea-novel-identity {
+    display: contents;
+  }
+
+  .norea-novel-hero:has(> .norea-novel-summary) .norea-novel-cover {
+    align-self: start;
+    grid-area: 1 / 1 / 3 / 2;
+  }
+
+  .norea-novel-hero:has(> .norea-novel-summary) .norea-novel-identity-text {
+    grid-area: 1 / 2;
+  }
+
+  .norea-novel-summary {
+    /* The cover sets the available height; long descriptions and tags scroll together. */
+    contain: size;
+    display: block;
+    grid-area: 2 / 2;
+    overflow-y: auto;
+  }
+
+  .norea-novel-summary-text {
+    -webkit-line-clamp: unset;
+    display: block;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .norea-novel-summary-footer {
+    margin-top: var(--norea-space-2);
+  }
+
+  .norea-novel-genres {
+    max-height: none;
+  }
+
+  .norea-novel-summary-toggle {
+    display: none;
+  }
+
+  .norea-novel-continue,
+  .norea-novel-actions {
+    grid-column: 1 / -1;
+  }
 }
 
 .norea-novel-chapters {

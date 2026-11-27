@@ -124,7 +124,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     getInitialValueInEffect: false,
   });
   const [debouncedSearch] = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
-  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const selectedSourceId = useLibraryStore((s) => s.selectedSourceId);
+  const setSelectedSourceId = useLibraryStore((s) => s.setSelectedSourceId);
   const libraryFilter = useMemo<LibraryNovelRefreshFilter>(
     () => ({
       search: debouncedSearch,
@@ -223,7 +224,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     ) {
       setSelectedSourceId(null);
     }
-  }, [selectedSourceId, sourceFilters.data, sourceFilters.isLoading]);
+  }, [selectedSourceId, setSelectedSourceId, sourceFilters.data, sourceFilters.isLoading]);
 
   const metadataRefreshMutation = useMutation({
     mutationFn: () =>
@@ -371,7 +372,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   );
   const clearAllFilters = () => {
     clearFilters();
-    setSelectedSourceId(null);
     setSearch("");
   };
   const overflowItems: OverflowMenuItem[] = [
@@ -514,10 +514,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
           >
             <LibraryQuickFilters
               counts={tagSummary}
-              onClear={() => {
-                clearFilters();
-                setSelectedSourceId(null);
-              }}
+              onClear={clearFilters}
               onOpenFilters={() => openViewOptions("filter")}
               onToggleSelection={selectionMode ? exitSelection : enterSelection}
               selectionActive={selectionMode}

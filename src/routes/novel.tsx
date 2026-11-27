@@ -110,6 +110,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const active = usePageActivity();
   const defaultChapterSort = useLibraryStore((s) => s.defaultChapterSort);
   const setDefaultChapterSort = useLibraryStore((s) => s.setDefaultChapterSort);
+  const showTagInLibrary = useLibraryStore((s) => s.showTagInLibrary);
   const lastReadChapterId = useReaderStore(
     (state) => state.lastReadChapterByNovel[id],
   );
@@ -887,6 +888,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 offlineState={offlineState}
                 onRead={openChapter}
                 onSelectChapters={() => setChapterSelectionMode(true)}
+                onSelectGenre={(genre) => {
+                  showTagInLibrary(genre);
+                  void navigate({ to: "/" });
+                }}
                 onToggleLibrary={() =>
                   toggle.mutate(novel.inLibrary ? {
                     downloadedCount: chapterStats.downloaded,
