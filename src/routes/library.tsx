@@ -592,10 +592,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                 onClick={() => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: true })}
               />
               <SelectionAction
-                aria-label={t("novel.refreshAllDetails")}
                 disabled={selectedIds.size === 0 || refreshAllMetadataMutation.isPending}
                 icon={RefreshAllIcon}
-                label={t("library.selection.refreshInfo")}
+                label={t("novel.refreshAllDetails")}
                 onClick={() => refreshAllMetadataMutation.mutate({ novelIds: selectedNovelIds })}
               />
               <SelectionAction

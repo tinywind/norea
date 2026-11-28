@@ -19,7 +19,7 @@ import { useContentSyncStore } from "../store/content-sync";
 import { USER_STATE_IDLE_RUNTIME, useUserStateStore, type UserStateLocalRetentionConfig } from "../store/user-state";
 import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
-import { ChevronRightIcon, ConnectIcon, SyncIcon, UploadIcon } from "./ui/icons";
+import { ChevronRightIcon, ConnectIcon, UploadIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 
 const DEFAULT_RETENTION_CONFIG: UserStateLocalRetentionConfig = {
@@ -331,9 +331,9 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
       </SettingsFieldRow>
       <SettingsFieldRow label={t("userState.syncNow")} description={t(pausedAfterRestore ? "userState.restorePausedDescription" : "userState.offDescription")}
         compactStatus={compactSyncStatus} error={error} status={syncStatus}>
-        <SettingsInlineControls>
-          <IconButton label={t("userState.syncNow")} size="lg" loading={working} disabled={!serverUrl || working || pausedAfterRestore || Boolean(epochMismatch)}
-            onClick={() => { void run(synchronizeUserState); }}><SyncIcon /></IconButton>
+        <SettingsInlineControls compact>
+          <Button variant="default" loading={working} disabled={!serverUrl || working || pausedAfterRestore || Boolean(epochMismatch)}
+            onClick={() => { void run(synchronizeUserState); }}>{t("contentSync.syncNow")}</Button>
         </SettingsInlineControls>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("userState.status")} compactStatus={statusSummary}>

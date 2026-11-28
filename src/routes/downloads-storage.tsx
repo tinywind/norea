@@ -26,6 +26,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CloseIcon,
+  CleanupIcon,
   TrashIcon,
   DownloadedIcon,
   FilterIcon,
@@ -778,7 +779,7 @@ export function DownloadsStorageView({
                 onClick={() => setCleanupOpened(true)}
                 size="lg"
               >
-                <TrashIcon />
+                <CleanupIcon />
               </IconButton>
               <OverflowMenu items={headerItems} label={t("common.more")} />
             </>

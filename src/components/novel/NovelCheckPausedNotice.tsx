@@ -41,7 +41,7 @@ export function NovelCheckPausedNotice({ active, checkNow, novelId }: NovelCheck
         size="compact-sm"
         variant="default"
       >
-        {t("updates.checkNow")}
+        {t("novel.checkNewChapters")}
       </Button>
     </div>
   );

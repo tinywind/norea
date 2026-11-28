@@ -9,6 +9,7 @@ import {
   IconBan,
   IconBatteryCharging,
   IconBell,
+  IconListCheck,
   IconBook,
   IconBookmark,
   IconBookmarkFilled,
@@ -123,7 +124,7 @@ export const ViewOptionsIcon = withAppDefaults(IconAdjustmentsHorizontal);
 export const SelectIcon = withAppDefaults(IconCheckbox);
 export const RefreshIcon = withAppDefaults(IconRefresh);
 export const RefreshAllIcon = withAppDefaults(IconRefreshDot);
-export const SyncIcon = withAppDefaults(IconRefreshDot);
+export const CleanupIcon = withAppDefaults(IconListCheck);
 export const RescanIcon = withAppDefaults(IconFileSearch);
 export const UploadIcon = withAppDefaults(IconCloudUpload);
 export const RestoreIcon = withAppDefaults(IconCloudDownload);

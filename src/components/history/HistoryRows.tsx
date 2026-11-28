@@ -12,7 +12,7 @@ import { pluginManager } from "../../lib/plugins/manager";
 import { useNovelCoverSource } from "../../lib/use-novel-cover-source";
 import { ConsoleCover } from "../ConsolePrimitives";
 import { formatChapterNumber } from "../novel/novel-detail-model";
-import { InfoIcon, TrashIcon } from "../ui/icons";
+import { OpenWorkIcon, TrashIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { OverflowMenu } from "../ui/OverflowMenu";
 import { IconButton } from "../IconButton";
@@ -142,7 +142,7 @@ export function HistoryRow({
         ) : (
           <>
             <IconButton label={t("history.novelDetails")} onClick={onOpenNovel} size="lg">
-              <InfoIcon />
+              <OpenWorkIcon />
             </IconButton>
             <OverflowMenu
               items={[

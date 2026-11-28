@@ -86,7 +86,7 @@ beforeEach(() => {
 it("offers manual merging while automatic sharing starts off, without snapshot replacement controls", async () => {
   const elements = view();
   expect(elements.find(item => item.props["aria-label"] === "Share automatically")?.props.checked).toBe(false);
-  const sync = elements.find(item => item.props.label === "Sync now" && item.props.onClick)!;
+  const sync = elements.find(item => item.props.children === "Sync" && item.props.onClick)!;
   expect(sync.props.disabled).toBe(false);
   expect(elements.some(item => item.props.label?.includes("Restore device backup"))).toBe(false);
   sync.props.onClick!();
@@ -97,7 +97,7 @@ it("offers manual merging while automatic sharing starts off, without snapshot r
 it("requires the explicit reconnect action after a portable restore", async () => {
   mocks.status.pausedAfterRestore = true;
   const elements = view();
-  expect(elements.find(item => item.props.label === "Sync now" && item.props.onClick)?.props.disabled).toBe(true);
+  expect(elements.find(item => item.props.children === "Sync" && item.props.onClick)?.props.disabled).toBe(true);
   expect(elements.find(item => item.props["aria-label"] === "Share automatically")?.props.disabled).toBe(true);
   expect(elements.some(item => typeof item.props.children === "string" &&
     item.props.children.includes("Shared information may update restored values"))).toBe(true);
@@ -111,7 +111,7 @@ it("only changes the selected server's automatic sharing preference", () => {
   const toggle = view().find(item => item.props["aria-label"] === "Share automatically")!;
   toggle.props.onChange!({ currentTarget: { checked: true } });
   expect(mocks.setEnabled).toHaveBeenCalledWith("https://server.example", true);
-  for (const control of view("").filter(item => item.props.label === "Sync now" && item.props.onClick)) expect(control.props.disabled).toBe(true);
+  for (const control of view("").filter(item => item.props.children === "Sync" && item.props.onClick)) expect(control.props.disabled).toBe(true);
 });
 
 it("shows outstanding local projection and failures separately from uploads", () => {
@@ -194,7 +194,7 @@ it("renders Mode A and Mode B rebind buttons when epochMismatch is active and tr
   const elements = view();
   const reseed = elements.find(item => item.props.children === "Re-seed local state")!;
   const fresh = elements.find(item => item.props.children === "Start fresh")!;
-  const syncNow = elements.find(item => item.props.label === "Sync now" && item.props.onClick)!;
+  const syncNow = elements.find(item => item.props.children === "Sync" && item.props.onClick)!;
   expect(reseed.props.disabled).toBe(false);
   expect(fresh.props.disabled).toBe(false);
   expect(syncNow.props.disabled).toBe(true);
@@ -234,7 +234,7 @@ it("displays background and blocked user-state failures identically to the notif
     revision: 1,
   };
   const syncRow = () =>
-    view().find(item => item.props.label === "Sync now" && "error" in (item.props as Record<string, unknown>));
+    view().find(item => item.props.label === "Reading information" && "error" in (item.props as Record<string, unknown>));
   expect((syncRow()?.props as { error?: string } | undefined)?.error).toBe(
     formatUserStateErrorSummary("Server temporarily unavailable", false, t),
   );

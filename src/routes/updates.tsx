@@ -514,7 +514,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
         actions={
           <IconButton
             disabled={check.isPending}
-            label={t("updates.check")}
+            label={t("updates.checkLibrary")}
             onClick={() => check.mutate(undefined)}
             size="lg"
           >

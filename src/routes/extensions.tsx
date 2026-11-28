@@ -943,7 +943,7 @@ export function UpdatesSection({
               title={plugin.name}
               trailing={
                 <IconButton
-                  label={t("extensions.updateAction", { name: plugin.name })}
+                  label={t(failedUpdates.has(plugin.id) ? "extensions.retryUpdate" : "extensions.updateAction", { name: plugin.name })}
                   loading={updatingPluginIds.has(plugin.id)}
                   onClick={() => onUpdate(pluginUpdate)}
                   size="lg"

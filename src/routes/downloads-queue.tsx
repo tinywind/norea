@@ -12,10 +12,6 @@ import {
   type UIEvent,
 } from "react";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
-import {
-  CloseGlyph,
-  RetryGlyph,
-} from "../components/ActionGlyphs";
 import { ConsoleStatusDot } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
 import {
@@ -42,6 +38,7 @@ import {
   DownloadsIcon,
   PauseIcon,
   PlayIcon,
+  RetryIcon,
   SettingsIcon,
   SortIcon,
   TrashIcon,
@@ -613,12 +610,12 @@ const TaskRow = memo(function TaskRow({
             size="lg"
             tone="danger"
           >
-            <CloseGlyph />
+            <CloseIcon />
           </IconButton>
         ) : null}
         {showActions && currentTask.canRetry ? (
           <IconButton label={t("common.retry")} onClick={retry} size="lg">
-            <RetryGlyph />
+            <RetryIcon />
           </IconButton>
         ) : null}
       </div>

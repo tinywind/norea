@@ -9,7 +9,8 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
   DownloadIcon,
-  InfoIcon,
+  OpenWorkIcon,
+  QueuedIcon,
   DownloadedIcon,
   RetryIcon,
 } from "../ui/icons";
@@ -94,7 +95,7 @@ function UpdateDownloadControl({
         role="status"
         title={label}
       >
-        <Loader aria-hidden="true" size="xs" />
+        {status.kind === "queued" ? <QueuedIcon size="1.25rem" /> : <Loader aria-hidden="true" size="xs" />}
       </span>
     );
   }
@@ -160,7 +161,7 @@ export function UpdateRow({
           status={downloadStatus}
         />
         <IconButton label={t("updates.openNovelAction")} onClick={onOpenNovel} size="lg">
-          <InfoIcon />
+          <OpenWorkIcon />
         </IconButton>
       </div>
     </div>

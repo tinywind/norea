@@ -72,6 +72,9 @@ describe("UpdateRow", () => {
     expect(render(<UpdateRow {...rowProps} downloadStatus={{ kind: "running" }} />)(
       '[role="status"][aria-label="common.downloading"]',
     )).toHaveLength(1);
+    expect(render(<UpdateRow {...rowProps} downloadStatus={{ kind: "queued" }} />)(
+      '[role="status"][aria-label="common.queued"] .tabler-icon-clock',
+    )).toHaveLength(1);
     const failed = render(<UpdateRow {...rowProps} downloadStatus={{ error: "Timed out", kind: "failed" }} />);
     expect(failed('button[aria-label="novel.retryDownload"]').attr("title")).toBe("novel.retryDownload: Timed out");
     expect(failed('button[aria-label="novel.downloadChapter"]')).toHaveLength(0);

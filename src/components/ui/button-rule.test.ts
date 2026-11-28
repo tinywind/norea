@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import en from "../../../strings/languages/en/app.json";
+import ko from "../../../strings/languages/ko/app.json";
 
 /*
  * Button hierarchy rule:
@@ -238,7 +239,7 @@ const ACTION_ICONS: Record<string, string> = {
   "common.settings": "SettingsIcon",
   "reader.openSettings": "ReaderSettingsIcon",
   "contentSync.browse": "BrowseIcon",
-  "userState.syncNow": "SyncIcon",
+  "contentSync.rescan": "RescanIcon",
   "userState.reconnectAfterRestore": "ConnectIcon",
   "downloads.deleteAll": "TrashIcon",
   "downloads.deleteChapter": "TrashIcon",
@@ -263,7 +264,7 @@ const ACTION_ICONS: Record<string, string> = {
   "settings.about.githubReleases": "GithubIcon",
   "settings.about.update.check": "RefreshIcon",
   "settings.about.update.install": "DownloadIcon",
-  "settings.data.downloadedContent.button": "TrashIcon",
+  "settings.data.downloadedContent.button": "CleanupIcon",
   "settings.data.pluginVpn.connection.connect": "ConnectIcon",
   "settings.data.pluginVpn.saved.manage": "SettingsIcon",
   "settings.data.pluginVpn.saved.reallow": "RestartIcon",
@@ -274,7 +275,7 @@ const ACTION_ICONS: Record<string, string> = {
   "storageSetup.selectExternalFolder": "FolderIcon",
   "storageSetup.selectFolder": "FolderIcon",
   "tasks.sort": "SortIcon",
-  "updates.check": "RefreshIcon",
+  "updates.checkLibrary": "RefreshIcon",
 };
 
 describe("D10 same action, same icon", () => {
@@ -301,7 +302,6 @@ describe("D10 same action, same icon", () => {
     const textOnly = new Set([
       "novel.deleteDownload",
       "source.sourceSettings",
-      "contentSync.rescan",
       "contentSync.syncNow",
       "settings.data.exportBackup",
       "settings.data.importBackup",
@@ -326,6 +326,14 @@ describe("D10 same action, same icon", () => {
 });
 
 describe("D10 action labels", () => {
+  it.each([en, ko])("uses the same action name across entry points", (messages) => {
+    expect(messages["reader.end.check"]).toBe(messages["novel.checkNewChapters"]);
+    expect(messages["updates.check"]).toBe(messages["novel.checkNewChapters"]);
+    expect(messages["history.novelDetails"]).toBe(messages["updates.openNovelAction"]);
+    expect(messages["downloads.openNovel"]).toBe(messages["updates.openNovelAction"]);
+    expect(messages["settings.data.downloadedContent.button"]).toBe(messages["chapterCleanup.title"]);
+  });
+
   it("names one action per button instead of chaining a second one the first implies", () => {
     const keys = new Set([
       ...buttons.flatMap((element) => labelKeys(element.children)),

@@ -12,7 +12,7 @@ import {
   SettingsSection,
 } from "../SettingsPrimitives";
 import { IconButton } from "../IconButton";
-import { TrashIcon, FolderIcon } from "../ui/icons";
+import { CleanupIcon, FolderIcon } from "../ui/icons";
 import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
@@ -319,7 +319,7 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
             disabled={isBusy}
             onClick={() => setCleanupOpened(true)}
           >
-            <TrashIcon />
+            <CleanupIcon />
           </IconButton>
         </SettingsFieldRow>
         <SettingsAdvancedGroup>

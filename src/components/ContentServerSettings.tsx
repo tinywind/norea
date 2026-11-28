@@ -15,8 +15,7 @@ import { useContentSyncStore } from "../store/content-sync";
 import { BatteryOptimizationSetting } from "./BatteryOptimizationSetting";
 import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
-import { OverflowMenu } from "./ui/OverflowMenu";
-import { BrowseIcon, ResetIcon, SaveIcon } from "./ui/icons";
+import { BrowseIcon, RescanIcon, ResetIcon, SaveIcon } from "./ui/icons";
 import { ReadingStateSettings } from "./ReadingStateSettings";
 import { showSettingsToast } from "./settings/settings-toast";
 
@@ -153,18 +152,13 @@ export function ContentServerSettings() {
             onChange={(value) => { if (typeof value === "number") setSyncIntervalMinutes(value); }} />
         </SettingsFieldRow>
       ) : null}
-      <SettingsFieldRow label={t("contentSync.manualSync")} description={t("contentSync.rescanDescription")}
+      <SettingsFieldRow label={t("contentSync.manualSync")} description={t("contentSync.recordedChanges")}
         compactStatus={compactStatus} status={syncStatus}
         error={syncError && syncError !== blockedMessage ? <ContentSyncErrorLine error={syncError} /> : syncError}>
-        <SettingsInlineControls>
+        <SettingsInlineControls compact>
           <Button loading={status === "syncing"} disabled={!serverUrl || busy} onClick={() => startSync()} variant="default">
             {t("contentSync.syncNow")}
           </Button>
-          <OverflowMenu
-            disabled={disabled || status === "syncing" || !serverUrl}
-            items={[{ label: t("contentSync.rescan"), onClick: () => startSync(true) }]}
-            label={t("common.more")}
-          />
         </SettingsInlineControls>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("contentSync.catalog")} description={t("contentSync.browseHint")}>
@@ -174,6 +168,10 @@ export function ContentServerSettings() {
         </IconButton>
       </SettingsFieldRow>
       <SettingsAdvancedGroup>
+        <SettingsFieldRow label={t("contentSync.rescan")} description={t("contentSync.rescanDescription")}>
+          <IconButton label={t("contentSync.rescan")} size="lg" disabled={disabled || status === "syncing" || !serverUrl}
+            onClick={() => startSync(true)}><RescanIcon /></IconButton>
+        </SettingsFieldRow>
         <SettingsFieldRow label={t("contentSync.lookupTimeout")} description={t("contentSync.lookupTimeoutDescription")}>
           <NumberInput aria-label={t("contentSync.lookupTimeout")} value={lookupTimeoutSeconds}
             min={1} max={120} allowDecimal={false} allowNegative={false}

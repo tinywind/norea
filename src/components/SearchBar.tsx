@@ -1,5 +1,5 @@
 import { Group, TextInput } from "@mantine/core";
-import { CloseGlyph, SearchGlyph } from "./ActionGlyphs";
+import { CloseIcon, SearchIcon } from "./ui/icons";
 import { IconButton } from "./IconButton";
 import { useTranslation } from "../i18n";
 
@@ -60,7 +60,7 @@ export function SearchBar({
               onClear?.();
             }}
           >
-            <CloseGlyph />
+            <CloseIcon />
           </IconButton>
         ) : null
       }
@@ -83,7 +83,7 @@ export function SearchBar({
         size="lg"
         onClick={onSubmit}
       >
-        <SearchGlyph />
+        <SearchIcon />
       </IconButton>
     </Group>
   );

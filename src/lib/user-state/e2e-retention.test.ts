@@ -1419,7 +1419,7 @@ describe("Client E2E — Tier 1: Feature Coverage", () => {
     expect(buttonTexts.some((text) => /start fresh|fresh/i.test(text))).toBe(true);
 
     const syncNowButton = enElements.find(
-      (el) => el.props.label === enMessages["userState.syncNow"] && el.props.onClick,
+      (el) => el.props.children === enMessages["contentSync.syncNow"] && el.props.onClick,
     );
     expect(syncNowButton?.props.disabled).toBe(true);
 
@@ -2158,13 +2158,13 @@ describe("Client E2E — Tier 2: Boundary & Corner Cases", () => {
 
   it("T2-G5: ReadingStateSettings disables controls while pausedAfterRestore or working is true", async () => {
     const elements = await renderSettingsControls(SERVER_URL, { pausedAfterRestore: true });
-    const syncButton = elements.find((el) => el.props.label === enMessages["userState.syncNow"] && el.props.onClick);
+    const syncButton = elements.find((el) => el.props.children === enMessages["contentSync.syncNow"] && el.props.onClick);
     expect(syncButton?.props.disabled).toBe(true);
 
     useUserStateStore.getState().setRuntime(SERVER_URL, "syncing");
     const workingElements = await renderSettingsControls(SERVER_URL);
     const syncWhileBusy = workingElements.find(
-      (el) => el.props.label === enMessages["userState.syncNow"] && el.props.onClick,
+      (el) => el.props.children === enMessages["contentSync.syncNow"] && el.props.onClick,
     );
     expect(syncWhileBusy?.props.disabled).toBe(true);
   });

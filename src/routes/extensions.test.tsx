@@ -399,7 +399,7 @@ describe("Extensions updates", () => {
 
     expect($("body").text()).toContain("2.0.0 → 2.1.0 · Update failed");
     expect($('button[aria-label="Update Plugin a"] .tabler-icon-download')).toHaveLength(1);
-    expect($('button[aria-label="Update Plugin b"] .tabler-icon-reload')).toHaveLength(1);
+    expect($('button[aria-label="Retry update for Plugin b"] .tabler-icon-reload')).toHaveLength(1);
     expect($("body").text()).toContain("Couldn't update 1 extensions");
     expect($("body").text()).toContain("Plugin b: offline");
   });

@@ -27,7 +27,7 @@ beforeEach(() => {
 it("shows paused checking with the last success and Check now once checks back off", () => {
   const $ = render();
   expect($("[role=status]").text()).toContain("novel.checkPaused:2026-11-02");
-  expect($("button").text()).toBe("updates.checkNow");
+  expect($("button").text()).toBe("novel.checkNewChapters");
 });
 
 it("says every check failed when none ever succeeded", () => {
