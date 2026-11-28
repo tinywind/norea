@@ -2365,4 +2365,47 @@ describe("cancelled recovery cleanup", () => {
     expect(recovery.getDownloadRecoverySnapshot()).toEqual([]);
     await runtime.cancelVpnDownloadRun();
   });
+
+  it("adopts updated global recovery settings when resuming a paused VPN run", async () => {
+    const { useDownloadRecoveryStore } = await import("../../store/download-recovery");
+    const recovery = await import("./download-recovery");
+    useDownloadRecoveryStore.getState().setPolicy({
+      transientAction: "pause",
+      maxRetries: 2,
+      maxProfileChanges: 1,
+      retryDelaySeconds: 5,
+    });
+    const resumeSpy = vi.spyOn(recovery.downloadRecovery, "resume");
+    const runtime = await import("./vpn-download-runtime");
+    try {
+      await runtime.startVpnDownloadRun({ workerCount: 1, captchaPolicy: "pause", cloudflarePolicy: "pause" });
+      await interceptChapterDownloadBatch({ jobs: [...jobs], title: "Paused batch" })!.materialized;
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalled());
+
+      await runtime.pauseVpnDownloadRun();
+      await vi.waitFor(() => expect(runtime.getVpnDownloadRuntimeSnapshot().run?.status).toBe("paused"));
+
+      useDownloadRecoveryStore.getState().setPolicy({
+        transientAction: "nextProfile",
+        maxRetries: 3,
+        maxProfileChanges: 3,
+        retryDelaySeconds: 5,
+      });
+      resumeSpy.mockClear();
+
+      await runtime.resumeVpnDownloadRun();
+      expect(resumeSpy).toHaveBeenCalledTimes(1);
+      expect(resumeSpy).toHaveBeenCalledWith("source-test", new Set(jobs.map(job => recovery.downloadRecoveryKey(job))));
+
+      const action = recovery.downloadRecovery.networkLost(
+        recovery.downloadRecoveryKey(jobs[0]!),
+        new Error("Network connection was lost."),
+        { profile: { id: "profile-a", hash: "hash-a" } },
+      );
+      expect(action).toBe("nextProfile");
+    } finally {
+      resumeSpy.mockRestore();
+      await runtime.cancelVpnDownloadRun();
+    }
+  });
 });

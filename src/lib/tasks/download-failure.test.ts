@@ -3,13 +3,16 @@ import { ChapterMediaFinalizationError, ChapterMediaHttpRetryError, ChapterMedia
 import { ChapterStorageError } from "../chapter-storage-error";
 import { cloudflareAccessError } from "../http/response";
 import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
+import { PluginVpnTransportError } from "../plugin-vpn-transport";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import { ContentServerError, ContentServerTransportError } from "../content-sync/client";
 import {
-  automaticRetryDelayMs, classifyDownloadFailure, isChapterMediaVerificationFailure, isImmediateSourceStopFailure,
-  isIncompleteMediaFailure, isServerChapterMissingFailure, isServerChapterMissingWithoutSourceFailure,
-  isSkippableIncompleteMediaFailure, isSourceForbiddenFailure, ServerChapterMissingError,
+  automaticRetryDelayMs, classifyDownloadFailure, isChapterMediaVerificationFailure, isContentRejectedFailure,
+  isImmediateSourceStopFailure, isIncompleteMediaFailure, isServerChapterMissingFailure,
+  isServerChapterMissingWithoutSourceFailure, isSkippableIncompleteMediaFailure, isSourceForbiddenFailure,
+  isSourceSiteMovedFailure, ServerChapterMissingError,
 } from "./download-failure";
+import { DownloadRecoveryHoldError } from "./download-recovery";
 
 const cdnChallenge = cloudflareAccessError(
   { status: 403, statusText: "Forbidden", headers: { "cf-mitigated": "challenge" }, finalUrl: "https://cdn.example.net/a.jpg", body: "" },
@@ -263,5 +266,37 @@ describe("single-chapter verification and immediate stop classification", () => 
     expect(isIncompleteMediaFailure(classifyDownloadFailure(error).summary)).toBe(true);
     expect(isIncompleteMediaFailure("HTTP 404: Offline download is incomplete: 1 media assets unavailable (HTTP 404).")).toBe(true);
     expect(isIncompleteMediaFailure("Failed to fetch")).toBe(false);
+  });
+
+  it("matches source site moves and content rejections directly and through cause chains", () => {
+    const moved = new Error("webview_extract: timeout after 35000ms; the page moved to https://new.example.test, outside the source site https://old.example.test");
+    const wrappedMoved = new PluginVpnTransportError({
+      routeGeneration: 1,
+      requestId: 1,
+      host: "old.example.test",
+      port: 443,
+      kind: "tcp",
+      message: "timed out waiting for response",
+    }, moved);
+    const heldMoved = new DownloadRecoveryHoldError("Download held", moved);
+    expect(isSourceSiteMovedFailure(moved)).toBe(true);
+    expect(isSourceSiteMovedFailure(wrappedMoved)).toBe(true);
+    expect(isSourceSiteMovedFailure(heldMoved)).toBe(true);
+    expect(classifyDownloadFailure(wrappedMoved).failureClass).toBe("content");
+    expect(isSourceSiteMovedFailure(new Error("webview_extract: timeout after 35000ms"))).toBe(false);
+
+    const rejected = new Error("content-rejected: Captured chapter content contains text the plugin rejects.");
+    const wrappedRejected = new DownloadRecoveryHoldError("Recovery paused after retry budget", rejected);
+    const codedRejected = Object.assign(new Error("Plugin refused substitute content"), { code: "content-rejected" });
+    expect(isContentRejectedFailure(rejected)).toBe(true);
+    expect(isContentRejectedFailure(wrappedRejected)).toBe(true);
+    expect(isContentRejectedFailure(codedRejected)).toBe(true);
+    expect(isImmediateSourceStopFailure(wrappedRejected)).toBe(true);
+    expect(isContentRejectedFailure(new Error("content-not-found: Empty chapter body"))).toBe(false);
+
+    const cyclic: Error & { cause?: unknown } = new Error("cyclic error");
+    cyclic.cause = cyclic;
+    expect(isSourceSiteMovedFailure(cyclic)).toBe(false);
+    expect(isContentRejectedFailure(cyclic)).toBe(false);
   });
 });

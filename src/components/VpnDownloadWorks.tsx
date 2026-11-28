@@ -68,6 +68,7 @@ const PAUSE_KEYS: Record<string, TranslationKey> = {
   "manual-verification": "vpnDownload.reason.verification", "verification-unavailable": "vpnDownload.reason.verificationUnavailable",
   "authentication-required": "vpnDownload.reason.authentication", "download-failed": "vpnDownload.reason.downloadFailed",
   "chapter-failed": "vpnDownload.reason.chapterFailed",
+  "source-site-moved": "vpnDownload.reason.siteMoved", "content-rejected": "vpnDownload.reason.contentRejected",
   "runtime-error": "vpnDownload.reason.runtimeError", "user-paused": "vpnDownload.userPaused",
   "automatic-off": "vpnDownload.reason.off", cancelled: "vpnDownload.phase.cancelled",
   "work-paused": "vpnDownload.workPaused",
@@ -118,6 +119,7 @@ export function vpnDownloadWorks(snapshot: VpnDownloadRuntimeSnapshot): VpnDownl
 const ATTENTION_PAUSES = new Set([
   "profiles-exhausted", "challenge-captcha", "challenge-cloudflare", "challenge-forbidden", "manual-verification",
   "verification-unavailable", "authentication-required", "download-failed", "runtime-error", "site-forbidden", "chapter-failed",
+  "source-site-moved", "content-rejected",
 ]);
 
 /** One status for a VPN work, from its most urgent range, draft or handover state. */
