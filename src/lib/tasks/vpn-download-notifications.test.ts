@@ -142,3 +142,14 @@ it("surfaces an untyped site-forbidden failure as HTTP 403 attention", () => {
     kind: "failed", ranges: [{ planId: "plan-a", rangeId: "denied" }],
   });
 });
+
+it.each([
+  ["source-site-moved", "vpnDownload.reason.siteMoved"],
+  ["content-rejected", "vpnDownload.reason.contentRejected"],
+] as const)("surfaces %s as failed attention with its localized reason", (pauseReason, expectedBody) => {
+  const current = plan([range("stopped", { pauseReason, challenge: null })]);
+  expect(vpnDownloadNotifications([current], t, "running")[0]?.body).toBe(expectedBody);
+  expect(vpnDownloadAttention([current], "running")).toMatchObject({
+    kind: "failed", ranges: [{ planId: "plan-a", rangeId: "stopped" }],
+  });
+});

@@ -77,6 +77,7 @@ class Runtime implements VpnDownloadRuntime {
   online = true;
   switchAllowed = true;
   recoveryProfile?: VpnDownloadRuntime["recoveryProfile"];
+  resumeRecovery?: VpnDownloadRuntime["resumeRecovery"];
   networkRecovery?: VpnDownloadRuntime["networkRecovery"];
   tryServerChapter?: (job: ChapterDownloadJob, signal: AbortSignal) => Promise<boolean>;
   nativeGeneration = 0;
@@ -2962,4 +2963,278 @@ it("does not skip a server transfer 404 after a VPN worker rechecks the server",
     expect(runtime.events.some(event => event.startsWith("settle:"))).toBe(false);
     expect(runtime.issues).toEqual([]);
   } finally { await coordinator.cancelPlan("plan"); }
+});
+
+describe("source-wide stops and recovery policy refresh", () => {
+  it.each([
+    ["raw site-move timeout", () => new Error("webview_extract: timeout after 35000ms; the page moved to https://new.example.test, outside the source site https://old.example.test")],
+    ["transport-wrapped site-move timeout", () => new PluginVpnTransportError({
+      routeGeneration: 1,
+      requestId: 1,
+      host: "old.example.test",
+      port: 443,
+      kind: "tcp",
+      message: "timed out waiting for response",
+    }, new Error("webview_extract: timeout after 35000ms; the page moved to https://new.example.test, outside the source site https://old.example.test"))],
+  ])("stops only the affected source on %s without excluding VPN profiles", async (_label, makeError) => {
+    const runtime = new Runtime();
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const planA1 = {
+      ...plan([
+        range("a1", "a", [1, 2]),
+        range("a2", "b", [3, 4]),
+        { ...range("a-user", "c", [5]), userPaused: true, pauseReason: "user-paused" },
+        { ...range("a-failed", "d", [6]), pauseReason: "chapter-failed" },
+      ], "plan-a1"),
+      pluginId: "source-a",
+      novelId: 10,
+    };
+    const planA2 = { ...plan([range("a3", "a", [7, 8])], "plan-a2"), pluginId: "source-a", novelId: 11 };
+    const planB = { ...plan([range("b1", "a", [9])], "plan-b"), pluginId: "source-b", novelId: 12 };
+    const lateA = { ...plan([range("a4", "a", [10])], "plan-a3"), pluginId: "source-a", novelId: 13 };
+    try {
+      await coordinator.start(planA1, jobsFor(planA1));
+      await coordinator.start(planA2, jobsFor(planA2));
+      await coordinator.start(planB, jobsFor(planB));
+      await until(() => expect(runtime.task("a1")?.[1].job.id).toBe(1));
+
+      const [, task] = runtime.task("a1");
+      task.result.reject(makeError());
+      task.cleanup.resolve(undefined);
+
+      await until(() => {
+        expect(current(coordinator, "a1").pauseReason).toBe("source-site-moved");
+        expect(current(coordinator, "a2").pauseReason).toBe("source-site-moved");
+        expect(current(coordinator, "a3").pauseReason).toBe("source-site-moved");
+      });
+
+      // Sibling user-paused and already failure-held ranges keep their existing pause reasons.
+      expect(current(coordinator, "a-user")).toMatchObject({ phase: "paused", userPaused: true, pauseReason: "user-paused" });
+      expect(current(coordinator, "a-failed")).toMatchObject({ phase: "paused", pauseReason: "chapter-failed" });
+
+      // VPN profiles stay completely healthy and unexcluded.
+      expect(runtime.issues).toEqual([]);
+      expect(current(coordinator, "a1").attemptedProfileIds).toEqual([]);
+      expect(runtime.notices.at(-1)).toMatchObject({ planId: "plan-a1", rangeId: "a1", reason: "source-site-moved" });
+
+      // Plans for other sources continue using the healthy VPN profiles.
+      await until(() => expect(runtime.task("b1")?.[1].job.id).toBe(9));
+      runtime.succeed("b1");
+      await until(() => expect(current(coordinator, "b1").phase).toBe("completed"));
+
+      // A newly enrolled plan for the stopped source starts paused instead of retrying the dead origin.
+      await coordinator.start(lateA, jobsFor(lateA));
+      expect(current(coordinator, "a4")).toMatchObject({ phase: "paused", pauseReason: "source-site-moved", userPaused: false });
+
+      // Stop/restore preserves the source-site-moved hold until the user explicitly resumes.
+      await coordinator.stopAutomatic();
+      expect(current(coordinator, "a1").pauseReason).toBe("source-site-moved");
+      const restored = new VpnDownloadCoordinator(runtime);
+      await restored.restore();
+      expect(current(restored, "a1").pauseReason).toBe("source-site-moved");
+      expect(current(restored, "a3").pauseReason).toBe("source-site-moved");
+
+      // Explicit resume clears the source stop and allows the resumed range to complete.
+      await restored.resumeRange("plan-a1", "a1");
+      await until(() => expect(runtime.task("a1", 1)?.[1].job.id).toBe(1));
+      runtime.succeed("a1", 1);
+      await until(() => expect(runtime.task("a1", 2)?.[1].job.id).toBe(2));
+      runtime.succeed("a1", 2);
+      await until(() => expect(current(restored, "a1").phase).toBe("completed"));
+      // Unresumed sibling ranges stay held until explicitly resumed.
+      expect(current(restored, "a2").pauseReason).toBe("source-site-moved");
+    } finally {
+      await Promise.allSettled(["plan-a1", "plan-a2", "plan-a3", "plan-b"].map(id => coordinator.cancelPlan(id)));
+    }
+  });
+
+  it("releases a source-site-moved stop once all stopped ranges for that source are cancelled", async () => {
+    const runtime = new Runtime();
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const first = { ...plan([range("a1", "a", [1])], "plan-a1"), pluginId: "source-a", novelId: 10 };
+    const next = { ...plan([range("a2", "a", [2])], "plan-a2"), pluginId: "source-a", novelId: 11 };
+    try {
+      await coordinator.start(first, jobsFor(first));
+      await until(() => expect(runtime.task("a1")?.[1].job.id).toBe(1));
+      const [, task] = runtime.task("a1");
+      task.result.reject(new Error("webview_extract: timeout after 35000ms; the page moved to https://new.example.test, outside the source site https://old.example.test"));
+      task.cleanup.resolve(undefined);
+      await until(() => expect(current(coordinator, "a1").pauseReason).toBe("source-site-moved"));
+
+      await coordinator.cancelPlan("plan-a1");
+      await coordinator.start(next, jobsFor(next));
+      await until(() => expect(runtime.task("a2")?.[1].job.id).toBe(2));
+      runtime.succeed("a2");
+      await until(() => expect(current(coordinator, "a2").phase).toBe("completed"));
+    } finally {
+      await Promise.allSettled(["plan-a1", "plan-a2"].map(id => coordinator.cancelPlan(id)));
+    }
+  });
+
+  it.each([
+    ["raw content-rejected error", () => new Error("content-rejected: Captured chapter content contains text the plugin rejects.")],
+    ["recovery-held content-rejected error", () => new DownloadRecoveryHoldError(
+      "Recovery paused after retry budget.",
+      new Error("content-rejected: Captured chapter content contains text the plugin rejects."),
+    )],
+  ])("stops the affected source on %s instead of cascading chapter-failed across sibling ranges", async (_label, makeError) => {
+    const runtime = new Runtime();
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const planA1 = { ...plan([range("a1", "a", [1, 2]), range("a2", "b", [3, 4])], "plan-a1"), pluginId: "source-a", novelId: 10 };
+    const planA2 = { ...plan([range("a3", "c", [5, 6])], "plan-a2"), pluginId: "source-a", novelId: 11 };
+    const planB = { ...plan([range("b1", "a", [7])], "plan-b"), pluginId: "source-b", novelId: 12 };
+    try {
+      await coordinator.start(planA1, jobsFor(planA1));
+      await coordinator.start(planA2, jobsFor(planA2));
+      await coordinator.start(planB, jobsFor(planB));
+      await until(() => expect(runtime.task("a1")?.[1].job.id).toBe(1));
+
+      const [, task] = runtime.task("a1");
+      task.result.reject(makeError());
+      task.cleanup.resolve(undefined);
+
+      await until(() => {
+        expect(current(coordinator, "a1").pauseReason).toBe("content-rejected");
+        expect(current(coordinator, "a2").pauseReason).toBe("content-rejected");
+        expect(current(coordinator, "a3").pauseReason).toBe("content-rejected");
+      });
+      // Sibling ranges never ran and were never marked chapter-failed.
+      expect(runtime.chapterFailures.map(item => item.chapterId)).toEqual([1]);
+      expect(runtime.issues).toEqual([]);
+      expect(runtime.notices.at(-1)).toMatchObject({ planId: "plan-a1", rangeId: "a1", reason: "content-rejected" });
+
+      // Other sources keep running normally.
+      await until(() => expect(runtime.task("b1")?.[1].job.id).toBe(7));
+      runtime.succeed("b1");
+      await until(() => expect(current(coordinator, "b1").phase).toBe("completed"));
+    } finally {
+      await Promise.allSettled(["plan-a1", "plan-a2", "plan-b"].map(id => coordinator.cancelPlan(id)));
+    }
+  });
+
+  it("allows recovery profile rotation before stopping the source on a held content-rejected failure", async () => {
+    const runtime = new Runtime();
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const planA1 = { ...plan([range("a1", "a", [1])], "plan-a1"), pluginId: "source-a", novelId: 10 };
+    const planA2 = { ...plan([range("a2", "b", [2])], "plan-a2"), pluginId: "source-a", novelId: 11 };
+    try {
+      await coordinator.start(planA1, jobsFor(planA1));
+      await until(() => expect(runtime.task("a1")?.[1].job.id).toBe(1));
+
+      // First attempt asks recovery to rotate to the next unused VPN profile.
+      const [, firstAttempt] = runtime.task("a1", 0);
+      firstAttempt.result.reject(new DownloadRecoveryNextProfileError("chapter:1", ["a"]));
+      firstAttempt.cleanup.resolve(undefined);
+
+      await until(() => expect(runtime.task("a1", 1)?.[1].job.id).toBe(1));
+      expect(current(coordinator, "a1").profileId).toBe("b");
+      // Queue another range for the same source while the rotated attempt is in flight.
+      await coordinator.start(planA2, jobsFor(planA2));
+
+      // Second attempt exhausts recovery and holds with content-rejected.
+      const [, secondAttempt] = runtime.task("a1", 1);
+      secondAttempt.result.reject(new DownloadRecoveryHoldError(
+        "Recovery paused after profile budget.",
+        new Error("content-rejected: Captured chapter content contains text the plugin rejects."),
+      ));
+      secondAttempt.cleanup.resolve(undefined);
+
+      await until(() => {
+        expect(current(coordinator, "a1").pauseReason).toBe("content-rejected");
+        expect(current(coordinator, "a2").pauseReason).toBe("content-rejected");
+      });
+      expect(runtime.chapterFailures.map(item => item.chapterId)).toEqual([1]);
+      expect(runtime.issues).toEqual([]);
+    } finally {
+      await Promise.allSettled(["plan-a1", "plan-a2"].map(id => coordinator.cancelPlan(id)));
+    }
+  });
+
+  it("refreshes recovery on explicit range, work, and reallow resumes without refreshing on automatic profilesChanged", async () => {
+    const runtime = new Runtime();
+    const resumedBatches: { id: number; pluginId: string }[][] = [];
+    runtime.resumeRecovery = vi.fn((jobs: readonly Pick<ChapterDownloadJob, "id" | "pluginId">[]) => {
+      resumedBatches.push(jobs.map(({ id, pluginId }) => ({ id, pluginId })));
+    });
+    const loadJobsSpy = vi.spyOn(runtime, "loadJobs");
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = { ...plan([range("a", "a", [1, 2]), range("b", "b", [3])], "plan-a"), pluginId: "source-a", novelId: 10 };
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.task("a")?.[1].job.id).toBe(1));
+
+      // Automatic stop -> explicit resumeRange refreshes recovery synchronously without calling loadJobs.
+      await coordinator.stopAutomatic();
+      expect(current(coordinator, "a").pauseReason).toBe("automatic-off");
+      loadJobsSpy.mockClear();
+      await coordinator.resumeRange("plan-a", "a");
+      expect(resumedBatches).toEqual([[{ id: 1, pluginId: "source-a" }, { id: 2, pluginId: "source-a" }]]);
+      expect(loadJobsSpy).not.toHaveBeenCalled();
+
+      // Pause work -> resumeWork batches all resumed ranges into a single resumeRecovery call.
+      resumedBatches.length = 0;
+      await coordinator.pauseWork("source-a", 10);
+      await coordinator.resumeWork("source-a", 10, () => true);
+      expect(resumedBatches).toEqual([[
+        { id: 1, pluginId: "source-a" },
+        { id: 2, pluginId: "source-a" },
+        { id: 3, pluginId: "source-a" },
+      ]]);
+
+      // Exhaust all profiles so both ranges pause with profiles-exhausted.
+      runtime.profiles = [profile("a")];
+      await coordinator.stopAutomatic();
+      const restored = new VpnDownloadCoordinator(runtime);
+      const saved = runtime.stored.get("plan-a")!;
+      for (const item of saved.ranges) {
+        item.phase = "paused";
+        item.userPaused = false;
+        item.pauseReason = "profiles-exhausted";
+      }
+      await runtime.recordProfileIssue({
+        batchId: saved.batchId,
+        planId: saved.id,
+        rangeId: "a",
+        generation: 1,
+        profileId: profile("a").id,
+        profileHash: profile("a").hash,
+        ip: profile("a").ip,
+        cause: "page-unresponsive",
+      });
+      await restored.restore();
+      // Preserve profiles-exhausted pause state (restore marks non-failure pauses interrupted; simulate live exhausted state).
+      await restored.resumeRange("plan-a", "a", { resumeRecovery: false });
+      await restored.resumeRange("plan-a", "b", { resumeRecovery: false });
+      await until(() => {
+        expect(current(restored, "a").pauseReason).toBe("profiles-exhausted");
+        expect(current(restored, "b").pauseReason).toBe("profiles-exhausted");
+      });
+
+      // Automatic profilesChanged() does NOT refresh recovery policies.
+      resumedBatches.length = 0;
+      runtime.profiles = [profile("a"), profile("b")];
+      await restored.profilesChanged();
+      expect(resumedBatches).toEqual([]);
+
+      // Re-exhaust both ranges on profile("a") and test explicit reallowProfile().
+      await restored.stopAutomatic();
+      runtime.profiles = [profile("a")];
+      await restored.resumeRange("plan-a", "a", { resumeRecovery: false });
+      await restored.resumeRange("plan-a", "b", { resumeRecovery: false });
+      await until(() => {
+        expect(current(restored, "a").pauseReason).toBe("profiles-exhausted");
+        expect(current(restored, "b").pauseReason).toBe("profiles-exhausted");
+      });
+      resumedBatches.length = 0;
+      await restored.reallowProfile(saved.batchId, profile("a").ip, 1);
+      expect(resumedBatches).toEqual([[
+        { id: 1, pluginId: "source-a" },
+        { id: 2, pluginId: "source-a" },
+        { id: 3, pluginId: "source-a" },
+      ]]);
+      await restored.cancelPlan("plan-a");
+    } finally {
+      await coordinator.cancelPlan("plan-a").catch(() => undefined);
+    }
+  });
 });

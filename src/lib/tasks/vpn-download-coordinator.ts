@@ -3,7 +3,14 @@ import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { PluginVpnTransportError } from "../plugin-vpn-transport";
 import { sourceAccessScopeKey, type SourceAccessChallenge } from "../plugins/source-access";
 import type { ChapterDownloadJob } from "./chapter-download";
-import { classifyDownloadFailure, isSkippableIncompleteMediaFailure, isSourceForbiddenFailure, type DownloadFailureClass } from "./download-failure";
+import {
+  classifyDownloadFailure,
+  isContentRejectedFailure,
+  isSkippableIncompleteMediaFailure,
+  isSourceForbiddenFailure,
+  isSourceSiteMovedFailure,
+  type DownloadFailureClass,
+} from "./download-failure";
 import { isHttpNotFoundError } from "../http/status-error";
 import { isDownloadRecoveryHold, isDownloadRecoveryNextProfile, isDownloadRecoveryReconnect } from "./download-recovery";
 import type { SourceAccessBlock } from "./source-access-gate";
@@ -45,7 +52,7 @@ export interface VpnDownloadRuntime {
   reservedProfileIds(): readonly string[];
   /** A foreground browser owns the shared profile until its explicit interaction ends. */
   canSwitchProfile?(): boolean;
-  resumeRecovery?(jobs: readonly ChapterDownloadJob[]): void;
+  resumeRecovery?(jobs: readonly Pick<ChapterDownloadJob, "id" | "pluginId">[]): void;
   recoveryProfile?(job: ChapterDownloadJob): { id: string; hash: string | null } | null;
   networkRecovery?(job: ChapterDownloadJob, profile: VpnDownloadProfile): { action: "pause" | "retry" | "resetSite" | "nextProfile" | null; usedProfileIds: readonly string[] };
   connectWorker(worker: VpnDownloadWorkerRef, profile: VpnDownloadProfile, signal: AbortSignal, job?: ChapterDownloadJob): Promise<"connected" | "authentication-required">;
@@ -135,6 +142,7 @@ const consumeReallow = (range: VpnDownloadRangeState, profileId: string, issue: 
   };
 };
 const isRetryableScraperFailure = (error: unknown): boolean => {
+  if (isSourceSiteMovedFailure(error)) return false;
   const cause = error instanceof PluginVpnTransportError ? error.cause : error;
   return cause instanceof Error &&
     /^(?:webview_(?:fetch|extract): (?:timeout|timed out)\b|Android scraper (?:fetch|extract) timed out$|scraper: browser (?:fetch|navigation) to https?:\/\/\S+ timed out after \d+ms$|scraper: timed out preparing (?:fetch|extract) context https?:\/\/\S+$|scraper: navigation failed \(-11\): net::ERR_TUNNEL_CONNECTION_FAILED at https?:\/\/)/i.test(cause.message);
@@ -145,9 +153,12 @@ export function isVpnDownloadForbiddenHeld(range: VpnDownloadRangeState): boolea
   return range.challenge?.kind === "forbidden" || range.pauseReason === "site-forbidden";
 }
 
+const SOURCE_STOP_PAUSES = new Set(["source-site-moved", "content-rejected"]);
+
 const FAILURE_PAUSES = new Set([
   "chapter-failed", "download-failed", "runtime-error", "authentication-required", "verification-unavailable",
   "challenge-captcha", "challenge-cloudflare", "manual-verification", "profile-unavailable",
+  "source-site-moved", "content-rejected",
 ]);
 
 /** A failed range waits for an explicit range resume, including across restarts and bulk actions. */
@@ -177,6 +188,7 @@ export class VpnDownloadCoordinator {
   private readonly writes = new Map<string, Promise<void>>();
   private readonly cancellingPlans = new Set<string>();
   private readonly pausedWorks = new Set<string>();
+  private readonly stoppedSources = new Map<string, string>();
   private readonly profileIssues = new Map<string, Map<string, VpnDownloadProfileIssue>>();
   private readonly issueLoads = new Map<string, Promise<void>>();
   private readonly pendingExclusions = new Map<string, VpnDownloadProfileIssueInput>();
@@ -244,6 +256,9 @@ export class VpnDownloadCoordinator {
             const reason = isVpnDownloadForbiddenHeld(range)
               ? range.challenge?.kind === "forbidden" ? "challenge-forbidden" : "site-forbidden"
               : range.pauseReason;
+            if (reason && SOURCE_STOP_PAUSES.has(reason)) {
+              this.stoppedSources.set(plan.pluginId, reason);
+            }
             changed ||= range.phase !== "paused" || range.pauseReason !== reason;
             range.phase = "paused";
             range.pauseReason = reason;
@@ -278,12 +293,13 @@ export class VpnDownloadCoordinator {
       await this.loadProfileIssues(plan.batchId);
       await this.runtime.createPlan(plan, jobs);
       const workPaused = this.pausedWorks.has(JSON.stringify([plan.pluginId, plan.novelId]));
-      const automatic = this.automaticStopEpoch === stopEpoch && !workPaused;
+      const sourceStopReason = this.stoppedSources.get(plan.pluginId);
+      const automatic = this.automaticStopEpoch === stopEpoch && !workPaused && !sourceStopReason;
       if (!automatic) {
         for (const range of plan.ranges) {
           if (terminal(range)) continue;
           range.phase = "paused";
-          range.pauseReason = workPaused ? "work-paused" : "automatic-off";
+          range.pauseReason = workPaused ? "work-paused" : sourceStopReason ?? "automatic-off";
           if (workPaused) range.userPaused = true;
         }
       }
@@ -292,7 +308,7 @@ export class VpnDownloadCoordinator {
     this.schedule();
   }
 
-  async resumeRange(planId: string, rangeId: string, options: { restartPass?: boolean } = {}): Promise<void> {
+  async resumeRange(planId: string, rangeId: string, options: { restartPass?: boolean; resumeRecovery?: boolean } = {}): Promise<void> {
     if (this.cancellingPlans.has(planId)) throw new Error("VPN download plan is being cancelled.");
     const range = this.requireRange(planId, rangeId);
     const plan = this.plans.get(planId)!;
@@ -311,14 +327,13 @@ export class VpnDownloadCoordinator {
       if (!this.isEpoch(range, stoppedEpoch)) return;
       requestedEpoch = stoppedEpoch;
     }
+    if (options.resumeRecovery !== false) this.resumeRecoveryForRanges([range]);
     if (isVpnDownloadFailureHeld(state) || state.userPaused) {
-      const jobs = range.jobs ? [...range.jobs.values()] : await this.runtime.loadJobs(planId, rangeId);
-      this.runtime.resumeRecovery?.(jobs);
-      if (!this.isEpoch(range, requestedEpoch)) return;
       const chapterId = state.selectedChapterIds[state.checkpoint];
       if (chapterId !== undefined) await this.runtime.clearChapterFailure(chapterId);
       if (!this.isEpoch(range, requestedEpoch)) return;
     }
+    this.stoppedSources.delete(plan.pluginId);
     range.failureReason = undefined;
     range.intent = false;
     range.userHeld = false;
@@ -369,19 +384,30 @@ export class VpnDownloadCoordinator {
 
   async resumeWork(pluginId: string, novelId: number, canContinue: () => boolean): Promise<void> {
     this.pausedWorks.delete(JSON.stringify([pluginId, novelId]));
+    const targets: RangeRuntime[] = [];
     for (const plan of this.getPlans()) {
       if (plan.pluginId !== pluginId || plan.novelId !== novelId) continue;
       for (const range of plan.ranges) {
-        if (!canContinue()) return;
         if (range.phase === "paused" && !isVpnDownloadFailureHeld(range) &&
           (range.pauseReason === "work-paused" || !range.userPaused && range.pauseReason !== "profiles-exhausted")) {
-          await this.resumeRange(plan.id, range.id);
+          const enrolled = this.ranges.get(key(plan.id, range.id));
+          if (enrolled) targets.push(enrolled);
         }
       }
     }
+    if (!canContinue()) return;
+    this.resumeRecoveryForRanges(targets);
+    for (const target of targets) {
+      if (!canContinue()) return;
+      if (this.ranges.get(key(target.planId, target.rangeId)) !== target) continue;
+      await this.resumeRange(target.planId, target.rangeId, { resumeRecovery: false });
+    }
   }
 
-  clearWorkHolds(): void { this.pausedWorks.clear(); }
+  clearWorkHolds(): void {
+    this.pausedWorks.clear();
+    this.stoppedSources.clear();
+  }
   clearWorkHold(pluginId: string, novelId: number): void { this.pausedWorks.delete(JSON.stringify([pluginId, novelId])); }
 
   async reallowProfile(batchId: string, ip: string, expectedRevision: number): Promise<void> {
@@ -391,11 +417,13 @@ export class VpnDownloadCoordinator {
     const issue = await this.runtime.reallowProfile(batchId, ip, expectedRevision);
     const issues = this.profileIssues.get(batchId)!;
     if ((issues.get(ip)?.revision ?? 0) < issue.revision) issues.set(ip, clone(issue));
-    await Promise.all([...this.ranges.values()].filter(range => {
+    const targets = [...this.ranges.values()].filter(range => {
       const state = this.state(range);
       return epochs.get(range) === range.epoch && !range.userHeld && this.plans.get(range.planId)!.batchId === batchId && !state.userPaused && !range.manual &&
         !this.cancellingPlans.has(range.planId) && state.pauseReason === "profiles-exhausted";
-    }).map(range => this.resumeRange(range.planId, range.rangeId)));
+    });
+    this.resumeRecoveryForRanges(targets);
+    await Promise.all(targets.map(range => this.resumeRange(range.planId, range.rangeId, { resumeRecovery: false })));
     this.schedule();
   }
 
@@ -409,7 +437,7 @@ export class VpnDownloadCoordinator {
       const state = this.state(range);
       if (epochs.get(range) !== range.epoch || range.userHeld || state.pauseReason !== "profiles-exhausted" || state.userPaused || range.manual || this.cancellingPlans.has(range.planId)) continue;
       if (profiles.some(profile => this.profileEligibleForAttempt(range, profile))) {
-        pending.push(this.resumeRange(range.planId, range.rangeId));
+        pending.push(this.resumeRange(range.planId, range.rangeId, { resumeRecovery: false }));
       }
     }
     await Promise.all(pending);
@@ -438,7 +466,9 @@ export class VpnDownloadCoordinator {
       const state = this.state(range);
       range.manual = false;
       const reason = isVpnDownloadFailureHeld(state) ? state.pauseReason ?? "runtime-error"
-        : range.failureReason === "site-forbidden" ? "site-forbidden" : "runtime-error";
+        : range.failureReason === "site-forbidden" || SOURCE_STOP_PAUSES.has(range.failureReason ?? "")
+          ? range.failureReason!
+          : "runtime-error";
       range.failureReason = reason;
       return this.halt(range, reason, state.userPaused, true, false);
     }));
@@ -454,20 +484,24 @@ export class VpnDownloadCoordinator {
   async cancelRange(planId: string, rangeId: string): Promise<void> {
     const range = this.requireRange(planId, rangeId);
     if (terminal(this.state(range))) return;
+    const pluginId = this.plans.get(planId)?.pluginId;
     range.manual = false;
     await this.halt(range, "cancelled", true, true, false);
     await this.serialize(planId, async () => {
       this.install(await this.runtime.cancelRange(planId, rangeId));
       range.jobs?.clear();
     });
+    if (pluginId) this.releaseClearedSourceStop(pluginId);
   }
 
   async cancelPlan(planId: string): Promise<void> {
     if (!this.plans.has(planId) && !this.writes.has(planId)) return;
     if (this.cancellingPlans.has(planId)) return;
     this.cancellingPlans.add(planId);
+    let pluginId: string | undefined;
     try {
       if (!this.plans.has(planId)) await this.writes.get(planId);
+      pluginId = this.plans.get(planId)?.pluginId;
       const ranges = [...this.ranges.values()].filter(range => range.planId === planId);
       await Promise.all(ranges.map(range => {
         range.manual = false;
@@ -482,6 +516,7 @@ export class VpnDownloadCoordinator {
     } finally {
       this.cancellingPlans.delete(planId);
     }
+    if (pluginId) this.releaseClearedSourceStop(pluginId);
     this.schedule();
   }
 
@@ -625,6 +660,7 @@ export class VpnDownloadCoordinator {
     const plan = this.plans.get(range.planId)!;
     return this.isEpoch(range, epoch) && range.intent && !range.manual && !range.networkHeld && this.online &&
       !this.pausedWorks.has(JSON.stringify([plan.pluginId, plan.novelId])) &&
+      !this.stoppedSources.has(plan.pluginId) &&
       !this.cancellingPlans.has(range.planId) && !this.state(range).userPaused && !terminal(this.state(range));
   }
 
@@ -1011,7 +1047,18 @@ export class VpnDownloadCoordinator {
           (isHttpNotFoundError(outcome.error) || isSkippableIncompleteMediaFailure(outcome.error)) &&
           !serverFailure &&
           !isDownloadRecoveryHold(outcome.error);
-        if (!sourceMissing) range.failureReason = isSourceForbiddenFailure(outcome.error) ? "site-forbidden" : "chapter-failed";
+        const sourceStopReason = !sourceMissing
+          ? isSourceSiteMovedFailure(outcome.error)
+            ? "source-site-moved"
+            : isContentRejectedFailure(outcome.error)
+              ? "content-rejected"
+              : undefined
+          : undefined;
+        if (!sourceMissing) {
+          range.failureReason = isSourceForbiddenFailure(outcome.error)
+            ? "site-forbidden"
+            : sourceStopReason ?? "chapter-failed";
+        }
         if (isSourceForbiddenFailure(outcome.error)) {
           await this.excludeProfile(range, lease, "site-forbidden");
           await this.fail(range, epoch, "site-forbidden", outcome.error);
@@ -1020,6 +1067,10 @@ export class VpnDownloadCoordinator {
         await this.recordChapterFailure(job, outcome.error);
         if (!this.owns(range, epoch, lease)) return;
         if (!sourceMissing) {
+          if (sourceStopReason) {
+            await this.stopForSourceFailure(plan.pluginId, sourceStopReason, range, epoch, outcome.error);
+            return;
+          }
           if (isPluginVpnUnavailableError(outcome.error)) {
             this.recordProfileResult(lease.profile, false);
             await this.excludeProfile(range, lease, "tunnel-lost");
@@ -1244,6 +1295,56 @@ export class VpnDownloadCoordinator {
     const stopped = this.halt(range, reason, false, true, false);
     this.notice(range, reason, error);
     await stopped;
+  }
+
+  private resumeRecoveryForRanges(ranges: readonly RangeRuntime[]): void {
+    if (!this.runtime.resumeRecovery || !ranges.length) return;
+    const jobs: Pick<ChapterDownloadJob, "id" | "pluginId">[] = [];
+    for (const range of ranges) {
+      const plan = this.plans.get(range.planId);
+      if (!plan) continue;
+      const state = this.state(range);
+      for (const id of state.selectedChapterIds.slice(state.checkpoint)) {
+        jobs.push({ id, pluginId: plan.pluginId });
+      }
+    }
+    if (jobs.length) this.runtime.resumeRecovery(jobs);
+  }
+
+  private releaseClearedSourceStop(pluginId: string): void {
+    if (!this.stoppedSources.has(pluginId)) return;
+    const stillStopped = [...this.ranges.values()].some(range => {
+      const plan = this.plans.get(range.planId);
+      if (!plan || plan.pluginId !== pluginId) return false;
+      const state = this.state(range);
+      return !terminal(state) && SOURCE_STOP_PAUSES.has(state.pauseReason ?? "");
+    });
+    if (!stillStopped) this.stoppedSources.delete(pluginId);
+  }
+
+  private async stopForSourceFailure(
+    pluginId: string,
+    reason: string,
+    originRange: RangeRuntime,
+    originEpoch: number,
+    error: unknown,
+  ): Promise<void> {
+    if (!this.isEpoch(originRange, originEpoch)) return;
+    this.stoppedSources.set(pluginId, reason);
+    originRange.failureReason = reason;
+    const pending: Promise<void>[] = [this.halt(originRange, reason, false, true, false)];
+    for (const candidate of this.ranges.values()) {
+      if (candidate === originRange) continue;
+      const plan = this.plans.get(candidate.planId);
+      if (!plan || plan.pluginId !== pluginId) continue;
+      const state = this.state(candidate);
+      if (terminal(state) || state.userPaused || isVpnDownloadFailureHeld(state) || candidate.failureReason) continue;
+      candidate.manual = false;
+      candidate.failureReason = reason;
+      pending.push(this.halt(candidate, reason, false, true, false));
+    }
+    this.notice(originRange, reason, error);
+    await Promise.all(pending);
   }
 
   private notice(range: RangeRuntime, reason: string, error?: unknown): void {

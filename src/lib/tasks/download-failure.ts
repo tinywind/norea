@@ -122,6 +122,30 @@ function isTransientMediaFailure(failure: ChapterMediaFailure): boolean {
     : isTransientMediaNetworkError(failure.message);
 }
 
+function matchesErrorChain(error: unknown, predicate: (current: unknown) => boolean): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+    if (predicate(current)) return true;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
+/** Recognizes a source domain redirect outside its configured site origin. */
+export function isSourceSiteMovedFailure(error: unknown): boolean {
+  return matchesErrorChain(error, (current) => SOURCE_SITE_MOVED.test(describeError(current)));
+}
+
+/** Recognizes plugin-rejected substitute chapter content across error wrappers. */
+export function isContentRejectedFailure(error: unknown): boolean {
+  return matchesErrorChain(
+    error,
+    (current) => errorCode(current) === "content-rejected" || CONTENT_REJECTED.test(describeError(current)),
+  );
+}
+
 /** An HTTP 403 access refusal, including the source-access hold created for it. */
 export function isSourceForbiddenFailure(error: unknown): boolean {
   if (errorCode(error) === "content-server-request-failed") return false;
@@ -174,7 +198,7 @@ export function isImmediateSourceStopFailure(error: unknown): boolean {
     return true;
   }
   const message = describeError(error);
-  if (SOURCE_SITE_MOVED.test(message) || MANUAL_ACTION_REQUIRED.test(message) || CONTENT_REJECTED.test(message)) {
+  if (isSourceSiteMovedFailure(error) || MANUAL_ACTION_REQUIRED.test(message) || isContentRejectedFailure(error)) {
     return true;
   }
   return isPluginVpnUnavailableError(error) || isNetworkUnavailableError(error);
@@ -221,7 +245,7 @@ export function classifyDownloadFailure(error: unknown): DownloadFailure {
   }
   if (isChapterMediaVerificationFailure(error)) return failure("media-incomplete");
   if (STORAGE_FAILURE.test(message)) return failure("storage");
-  if (CONTENT_FAILURE.test(message) || SOURCE_SITE_MOVED.test(message)) return failure("content");
+  if (CONTENT_FAILURE.test(message) || isSourceSiteMovedFailure(error)) return failure("content");
   const name = errorName(error);
   if (name && PLUGIN_PARSE_ERROR_NAMES.has(name)) return failure("content");
   const status = errorHttpStatus(error);
