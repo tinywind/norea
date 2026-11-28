@@ -757,4 +757,106 @@ describe("bounded persistence, legacy v1 migration, rollback, and pruning", () =
     expect(controller.networkLost("chapter:1", new Error("Offline"))).toBeNull();
     expect(controller.getSnapshot()).toMatchObject([{ key: "chapter:4", status: "held" }]);
   });
+
+  it("uses current global settings for unregistered jobs instead of a stale sourcePolicies entry", async () => {
+    const storage = memoryStorage();
+    const controller = new DownloadRecoveryController(storage);
+    const oldPolicy = policy({ transientAction: "pause", maxRetries: 2 });
+    const updatedPolicy = policy({ transientAction: "retry", maxRetries: 1 });
+    controller.register([{ id: 1, pluginId: "source-a", title: "Queued 1" }], oldPolicy);
+
+    useDownloadRecoveryStore.getState().setPolicy(updatedPolicy);
+    const op = vi.fn(async () => { throw failure(); });
+    const running = controller.run({ job: { id: 99, pluginId: "source-a", title: "Unregistered 99" }, url }, context(), op);
+    const rejected = expect(running).rejects.toThrow("HTTP 503");
+    await tick();
+    await rejected;
+    expect(op).toHaveBeenCalledTimes(2);
+  });
+
+  it("rebalances sourcePolicies when resuming more than 1,000 non-contiguous keys while another episode stays held", async () => {
+    const storage = quotaStorage(64 * 1024);
+    const controller = new DownloadRecoveryController(storage);
+    const oldPolicy = policy({ transientAction: "pause", maxRetries: 2 });
+    const updatedPolicy = policy({ transientAction: "nextProfile", maxRetries: 3, maxProfileChanges: 3 });
+
+    const jobs = Array.from({ length: 1_200 }, (_, index) => ({
+      id: (index + 1) * 2,
+      pluginId: "source-a",
+      title: `Chapter ${(index + 1) * 2}`,
+    }));
+    const heldJob = { id: 99_999, pluginId: "source-a", title: "Held chapter" };
+    controller.register([...jobs, heldJob], oldPolicy);
+    controller.networkLost(downloadRecoveryKey(heldJob), new Error("Connection dropped"));
+    expect(controller.getSnapshot()).toMatchObject([{ key: downloadRecoveryKey(heldJob), status: "held", maxRetries: 2 }]);
+
+    useDownloadRecoveryStore.getState().setPolicy(updatedPolicy);
+    // Resume in two incremental batches while heldJob stays held.
+    controller.resume("source-a", new Set(jobs.slice(0, 500).map(downloadRecoveryKey)));
+    controller.resume("source-a", new Set(jobs.slice(500).map(downloadRecoveryKey)));
+
+    const persisted = JSON.parse(storage.getItem(DOWNLOAD_RECOVERY_STORAGE_KEY)!);
+    expect(persisted.policies[persisted.sourcePolicies["source-a"]]).toEqual(updatedPolicy);
+    expect(persisted.policyOverrides).toEqual([]);
+
+    // After restart, every resumed chapter keeps updatedPolicy instead of overflowing overrides back to oldPolicy.
+    const restarted = new DownloadRecoveryController(storage);
+    restarted.restore([...jobs, heldJob]);
+    const resumedAction = restarted.networkLost(downloadRecoveryKey(jobs[0]!), new Error("Outage"), {
+      profile: { id: "p1", hash: "h1" },
+    });
+    expect(resumedAction).toBe("nextProfile");
+    const lastResumedAction = restarted.networkLost(downloadRecoveryKey(jobs[jobs.length - 1]!), new Error("Outage"), {
+      profile: { id: "p1", hash: "h1" },
+    });
+    expect(lastResumedAction).toBe("nextProfile");
+    // The untouched held episode keeps its own snapshotted oldPolicy.
+    expect(restarted.getSnapshot().find(entry => entry.key === downloadRecoveryKey(heldJob))).toMatchObject({
+      status: "held",
+      maxRetries: 2,
+    });
+  });
+
+  it("promotes sourcePolicies when a larger new batch registers under updated settings", () => {
+    const storage = memoryStorage();
+    const controller = new DownloadRecoveryController(storage);
+    const oldPolicy = policy({ transientAction: "pause" });
+    const updatedPolicy = policy({ transientAction: "retry", maxRetries: 3 });
+
+    controller.register([{ id: 1, pluginId: "source-a", title: "Old 1" }], oldPolicy);
+    controller.register([
+      { id: 10, pluginId: "source-a", title: "New 10" },
+      { id: 12, pluginId: "source-a", title: "New 12" },
+    ], updatedPolicy);
+
+    const persisted = JSON.parse(storage.getItem(DOWNLOAD_RECOVERY_STORAGE_KEY)!);
+    expect(persisted.policies[persisted.sourcePolicies["source-a"]]).toEqual(updatedPolicy);
+    expect(persisted.policyOverrides).toHaveLength(1);
+    expect(persisted.policyOverrides[0]).toMatchObject({ sourceId: "source-a", ranges: [[1, 1]] });
+    expect(persisted.policies[persisted.policyOverrides[0].policyIndex]).toEqual(oldPolicy);
+  });
+
+  it("clears restoredSourcePolicies on full source resume so subsequent resumes can rebalance", () => {
+    const storage = memoryStorage();
+    const first = new DownloadRecoveryController(storage);
+    const oldPolicy = policy({ transientAction: "pause", maxRetries: 2 });
+    const middlePolicy = policy({ transientAction: "retry", maxRetries: 1 });
+    const newestPolicy = policy({ transientAction: "nextProfile", maxRetries: 3, maxProfileChanges: 3 });
+    const jobs = [
+      { id: 2, pluginId: "source-a", title: "Chapter 2" },
+      { id: 4, pluginId: "source-a", title: "Chapter 4" },
+    ];
+    first.register(jobs, oldPolicy);
+
+    const restarted = new DownloadRecoveryController(storage);
+    restarted.restore(jobs);
+    useDownloadRecoveryStore.getState().setPolicy(middlePolicy);
+    restarted.resume("source-a");
+
+    useDownloadRecoveryStore.getState().setPolicy(newestPolicy);
+    restarted.resume("source-a", new Set(jobs.map(downloadRecoveryKey)));
+    const persisted = JSON.parse(storage.getItem(DOWNLOAD_RECOVERY_STORAGE_KEY)!);
+    expect(persisted.policies[persisted.sourcePolicies["source-a"]]).toEqual(newestPolicy);
+    expect(persisted.policyOverrides).toEqual([]);
+  });
 });

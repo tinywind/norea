@@ -26,6 +26,8 @@ const MANUAL_PAUSE_KEYS: Readonly<Record<string, TranslationKey>> = {
   "authentication-required": "vpnDownload.reason.authentication",
   "download-failed": "vpnDownload.reason.downloadFailed",
   "chapter-failed": "vpnDownload.reason.chapterFailed",
+  "source-site-moved": "vpnDownload.reason.siteMoved",
+  "content-rejected": "vpnDownload.reason.contentRejected",
   "runtime-error": "vpnDownload.reason.runtimeError",
 };
 
@@ -58,6 +60,7 @@ export type VpnDownloadAttention =
 
 const FAILED_PAUSES: ReadonlySet<string> = new Set([
   "authentication-required", "download-failed", "runtime-error", "verification-unavailable", "profile-unavailable", "site-forbidden", "chapter-failed",
+  "source-site-moved", "content-rejected",
 ]);
 
 /** The one VPN problem the Queue page asks the user about; restarts, offline waits and busy profiles resolve by themselves. */

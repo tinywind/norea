@@ -202,7 +202,9 @@ it("offers range resume for failures and user pauses while keeping automatic wai
   expect(actions.resumeRange).toHaveBeenCalledWith("plan", "lane-e");
 });
 
-it.each(["challenge-forbidden", "site-forbidden", "chapter-failed", "download-failed", "runtime-error"] as const)("offers an explicit range Resume for a restored %s hold", async pauseReason => {
+it.each([
+  "challenge-forbidden", "site-forbidden", "chapter-failed", "source-site-moved", "content-rejected", "download-failed", "runtime-error",
+] as const)("offers an explicit range Resume for a restored %s hold", async pauseReason => {
   const plan = activePlan();
   Object.assign(plan.ranges[0]!, {
     pauseReason, userPaused: false,
@@ -218,7 +220,9 @@ it.each(["challenge-forbidden", "site-forbidden", "chapter-failed", "download-fa
   expect(iconButton(row(renderDetails(value), "lane-a"), "vpnDownload.resume").props.disabled).toBe(true);
 });
 
-it.each(["challenge-forbidden", "site-forbidden", "chapter-failed", "download-failed", "runtime-error"] as const)("does not offer whole-work Pause for an already held %s range", async pauseReason => {
+it.each([
+  "challenge-forbidden", "site-forbidden", "chapter-failed", "source-site-moved", "content-rejected", "download-failed", "runtime-error",
+] as const)("does not offer whole-work Pause for an already held %s range", async pauseReason => {
   const plan = activePlan();
   plan.ranges = [plan.ranges[0]!];
   Object.assign(plan.ranges[0]!, {
@@ -282,4 +286,15 @@ it("shows a forbidden range as attention with its HTTP 403 reason", () => {
   const value = withPlans(plan);
   expect(vpnDownloadWorkStatus(vpnDownloadWorks(value)[0]!, value)).toBe("attention");
   expect(text(renderDetails(value))).toContain("errors.forbidden");
+});
+
+it.each([
+  ["source-site-moved", "vpnDownload.reason.siteMoved"],
+  ["content-rejected", "vpnDownload.reason.contentRejected"],
+] as const)("shows a %s range as attention with its localized reason", (pauseReason, expectedKey) => {
+  const plan = activePlan();
+  Object.assign(plan.ranges[0]!, { pauseReason, challenge: null });
+  const value = withPlans(plan);
+  expect(vpnDownloadWorkStatus(vpnDownloadWorks(value)[0]!, value)).toBe("attention");
+  expect(text(renderDetails(value))).toContain(expectedKey);
 });

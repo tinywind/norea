@@ -263,7 +263,20 @@ const adapter: VpnDownloadRuntime = {
   reservedProfileIds: () => reservedProfiles,
   canSwitchProfile: () => !useSiteBrowserStore.getState().visible && !(taskScheduler.getSnapshot().records ?? []).some(task =>
     task.lane === "source" && task.status === "running" && !task.vpnWorker),
-  resumeRecovery: jobs => downloadRecovery.resume(undefined, new Set(jobs.map(downloadRecoveryKey))),
+  resumeRecovery: jobs => {
+    const bySource = new Map<string, Set<string>>();
+    for (const job of jobs) {
+      let keys = bySource.get(job.pluginId);
+      if (!keys) {
+        keys = new Set<string>();
+        bySource.set(job.pluginId, keys);
+      }
+      keys.add(downloadRecoveryKey(job));
+    }
+    for (const [sourceId, keys] of bySource) {
+      downloadRecovery.resume(sourceId, keys);
+    }
+  },
   recoveryProfile: job => downloadRecovery.retryProfile(downloadRecoveryKey(job)),
   networkRecovery: (job, profile) => {
     const key = downloadRecoveryKey(job);
@@ -604,6 +617,25 @@ function canAdmitRunWork(run: ActiveRun): boolean {
   return activeRun === run && !deviceRestore && !taskScheduler.getSnapshot().downloadFailureStops?.globalError && ["starting", "running", "paused"].includes(run.status);
 }
 
+function resumeRecoveryForPlanRanges(
+  targets: readonly { plan: VpnDownloadPlan; range: VpnDownloadRangeState }[],
+): void {
+  const bySource = new Map<string, Set<string>>();
+  for (const { plan, range } of targets) {
+    const remaining = range.selectedChapterIds.slice(range.checkpoint);
+    if (!remaining.length) continue;
+    let keys = bySource.get(plan.pluginId);
+    if (!keys) {
+      keys = new Set<string>();
+      bySource.set(plan.pluginId, keys);
+    }
+    for (const id of remaining) keys.add(downloadRecoveryKey({ id }));
+  }
+  for (const [sourceId, keys] of bySource) {
+    downloadRecovery.resume(sourceId, keys);
+  }
+}
+
 export function startVpnDownloadRun(options: VpnDownloadLaunchOptions): Promise<void> {
   return launchVpnDownloadRun(options, range => !range.userPaused);
 }
@@ -662,11 +694,19 @@ async function launchVpnDownloadRun(options: VpnDownloadLaunchOptions, shouldRes
     if (run.status !== "paused") run.status = "running";
     run.receivedWork ||= batches.size > 0 || run.originalPlanIds.size > 0 || run.transfers.size > 0;
     const resuming = (async () => {
+      const targets: { plan: VpnDownloadPlan; range: VpnDownloadRangeState }[] = [];
       for (const plan of coordinator.getPlans()) {
         for (const range of plan.ranges) {
-          if (!current()) return;
-          if (range.phase === "paused" && !isVpnDownloadFailureHeld(range) && shouldResume(range)) await coordinator.resumeRange(plan.id, range.id);
+          if (range.phase === "paused" && !isVpnDownloadFailureHeld(range) && shouldResume(range)) {
+            targets.push({ plan, range });
+          }
         }
+      }
+      if (!current()) return;
+      resumeRecoveryForPlanRanges(targets);
+      for (const { plan, range } of targets) {
+        if (!current()) return;
+        await coordinator.resumeRange(plan.id, range.id, { resumeRecovery: false });
       }
     })();
     run.transfers.add(resuming);
@@ -780,15 +820,21 @@ export async function resumeVpnDownloadRun(): Promise<void> {
       run.receivedWork = true;
       stageBatch({ jobs, title: jobs[0]?.novelName ?? "VPN downloads" }, batchId, false);
     }
+    const targets: { plan: VpnDownloadPlan; range: VpnDownloadRangeState; key: string }[] = [];
     for (const plan of coordinator.getPlans()) {
       for (const range of plan.ranges) {
-        if (!current()) return;
         const key = JSON.stringify([plan.id, range.id]);
         if (range.phase === "paused" && !isVpnDownloadFailureHeld(range) && (!range.userPaused || run.resumeRangeIds.has(key))) {
-          await coordinator.resumeRange(plan.id, range.id);
-          run.resumeRangeIds.delete(key);
+          targets.push({ plan, range, key });
         }
       }
+    }
+    if (!current()) return;
+    resumeRecoveryForPlanRanges(targets);
+    for (const { plan, range, key } of targets) {
+      if (!current()) return;
+      await coordinator.resumeRange(plan.id, range.id, { resumeRecovery: false });
+      run.resumeRangeIds.delete(key);
     }
     if (current()) { resetFailedDrafts(); retryPendingDrafts(); }
   })();

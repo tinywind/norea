@@ -618,9 +618,81 @@ export class DownloadRecoveryController {
     if (episode) return episode.policy;
     const override = lookupOverride(this.overrides, key);
     if (override) return override.policy;
-    const sourcePolicy = this.sourcePolicies.get(job.pluginId);
-    if (sourcePolicy) return sourcePolicy;
     return getDownloadRecoveryPolicy();
+  }
+
+  private rebalanceSourcePolicies(
+    sourceIds: Iterable<string>,
+    nextSourcePolicies: Map<string, DownloadRecoveryPolicy>,
+    overrides: PolicyOverrideState,
+    pendingRegistrations: ReadonlyMap<string, RecoveryRegistration>,
+    episodes: ReadonlyMap<string, RecoveryEpisode>,
+  ): PolicyOverrideState {
+    const candidates = new Set<string>();
+    for (const sourceId of sourceIds) {
+      if (!this.restoredSourcePolicies.has(sourceId)) candidates.add(sourceId);
+    }
+    if (candidates.size === 0) return overrides;
+
+    const countsBySource = new Map<string, Map<string, { policy: DownloadRecoveryPolicy; count: number }>>();
+    const tally = (registration: RecoveryRegistration) => {
+      if (!candidates.has(registration.sourceId)) return;
+      let counts = countsBySource.get(registration.sourceId);
+      if (!counts) {
+        counts = new Map();
+        countsBySource.set(registration.sourceId, counts);
+      }
+      const signature = policySignature(registration.policy);
+      const bucket = counts.get(signature);
+      if (bucket) bucket.count++;
+      else counts.set(signature, { policy: registration.policy, count: 1 });
+    };
+
+    for (const [key, registration] of this.registrations) {
+      tally(pendingRegistrations.get(key) ?? registration);
+    }
+    for (const [key, registration] of pendingRegistrations) {
+      if (!this.registrations.has(key)) tally(registration);
+    }
+
+    const flipped = new Map<string, DownloadRecoveryPolicy>();
+    for (const [sourceId, counts] of countsBySource) {
+      const currentBaseline = nextSourcePolicies.get(sourceId);
+      const currentCount = currentBaseline ? (counts.get(policySignature(currentBaseline))?.count ?? 0) : 0;
+      let bestPolicy = currentBaseline;
+      let bestCount = currentCount;
+      for (const bucket of counts.values()) {
+        if (bucket.count > bestCount) {
+          bestPolicy = bucket.policy;
+          bestCount = bucket.count;
+        }
+      }
+      if (bestPolicy && (!currentBaseline || !policiesEqual(currentBaseline, bestPolicy))) {
+        nextSourcePolicies.set(sourceId, bestPolicy);
+        flipped.set(sourceId, bestPolicy);
+      }
+    }
+    if (flipped.size === 0) return overrides;
+
+    let nextOverrides = overrides;
+    for (const sourceId of flipped.keys()) {
+      nextOverrides = deleteOverridesBySource(nextOverrides, sourceId);
+    }
+    const rebuilt: { key: string; sourceId: string; policy: DownloadRecoveryPolicy }[] = [];
+    const collectMinority = (key: string, registration: RecoveryRegistration) => {
+      if (episodes.has(key)) return;
+      const baseline = flipped.get(registration.sourceId);
+      if (baseline && !policiesEqual(baseline, registration.policy)) {
+        rebuilt.push({ key, sourceId: registration.sourceId, policy: registration.policy });
+      }
+    };
+    for (const [key, registration] of this.registrations) {
+      collectMinority(key, pendingRegistrations.get(key) ?? registration);
+    }
+    for (const [key, registration] of pendingRegistrations) {
+      if (!this.registrations.has(key)) collectMinority(key, registration);
+    }
+    return rebuilt.length ? upsertOverrideEntries(nextOverrides, rebuilt) : nextOverrides;
   }
 
   private load(): void {
@@ -992,6 +1064,7 @@ export class DownloadRecoveryController {
     const nextSourcePolicies = new Map(this.sourcePolicies);
     const overrideAdditions: { key: string; sourceId: string; policy: DownloadRecoveryPolicy }[] = [];
     const overrideRemovals: string[] = [];
+    const overrideSources = new Set<string>();
     for (const { key, registration } of added) {
       const baseline = nextSourcePolicies.get(registration.sourceId);
       if (!baseline) {
@@ -999,6 +1072,7 @@ export class DownloadRecoveryController {
         overrideRemovals.push(key);
       } else if (!policiesEqual(baseline, registration.policy)) {
         overrideAdditions.push({ key, sourceId: registration.sourceId, policy: registration.policy });
+        overrideSources.add(registration.sourceId);
       } else {
         overrideRemovals.push(key);
       }
@@ -1008,6 +1082,13 @@ export class DownloadRecoveryController {
       : cloneOverrides(this.overrides);
     if (overrideAdditions.length) {
       nextOverrides = upsertOverrideEntries(nextOverrides, overrideAdditions);
+      nextOverrides = this.rebalanceSourcePolicies(
+        overrideSources,
+        nextSourcePolicies,
+        nextOverrides,
+        new Map(added.map(({ key, registration }) => [key, registration])),
+        this.episodes,
+      );
     }
 
     this.commitPersistedState(
@@ -1128,7 +1209,7 @@ export class DownloadRecoveryController {
     } else {
       const overrideAdditions: { key: string; sourceId: string; policy: DownloadRecoveryPolicy }[] = [];
       const overrideRemovals: string[] = [];
-      const matchedBySource = new Map<string, number>();
+      const matchedSources = new Set<string>();
 
       for (const key of keys) {
         const registration = this.registrations.get(key);
@@ -1146,7 +1227,7 @@ export class DownloadRecoveryController {
         }
         if (registration) {
           registrationUpdates.push([key, { ...registration, policy }]);
-          matchedBySource.set(keySourceId, (matchedBySource.get(keySourceId) ?? 0) + 1);
+          matchedSources.add(keySourceId);
         }
         const baseline = nextSourcePolicies.get(keySourceId);
         if (baseline && !policiesEqual(baseline, policy)) {
@@ -1158,16 +1239,14 @@ export class DownloadRecoveryController {
 
       nextOverrides = deleteOverridesByKeys(nextOverrides, overrideRemovals);
       nextOverrides = upsertOverrideEntries(nextOverrides, overrideAdditions);
-
-      for (const [matchedSourceId, count] of matchedBySource) {
-        if (
-          !this.restoredSourcePolicies.has(matchedSourceId) &&
-          count === (this.sourceRegistrationCounts.get(matchedSourceId) ?? 0) &&
-          !sourceHasEpisode(nextEpisodes, matchedSourceId)
-        ) {
-          nextSourcePolicies.set(matchedSourceId, policy);
-          nextOverrides = deleteOverridesBySource(nextOverrides, matchedSourceId);
-        }
+      if (matchedSources.size > 0) {
+        nextOverrides = this.rebalanceSourcePolicies(
+          matchedSources,
+          nextSourcePolicies,
+          nextOverrides,
+          new Map(registrationUpdates),
+          nextEpisodes,
+        );
       }
     }
 
@@ -1179,6 +1258,10 @@ export class DownloadRecoveryController {
         siteResets: nextSiteResets,
       },
       () => {
+        if (!keys) {
+          if (sourceId) this.restoredSourcePolicies.delete(sourceId);
+          else this.restoredSourcePolicies.clear();
+        }
         for (const [key, registration] of registrationUpdates) {
           this.setRegistration(key, registration);
         }

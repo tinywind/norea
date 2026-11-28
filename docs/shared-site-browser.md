@@ -70,10 +70,14 @@ independently rotate it. Setting changes normally apply at the next real route
 change, rather than changing the active session immediately.
 
 The implementation uses the installed WebView engine version for a common
-User-Agent and native User-Agent Client Hints. Android source-specific and manual
-User-Agent values do not override this shared environment. When rotation is
-enabled, an Android device preset supplies the model and WebGL vendor/renderer,
-with selected hardware properties and reported screen dimensions. Individual
+User-Agent and native User-Agent Client Hints (preserving Chromium's GREASE
+brand entry), and suppresses WebView's automatic package-name
+`X-Requested-With` header on site requests via the shared profile's custom
+request header rule (with top-level navigation headers as fallback on older
+WebView providers). Android source-specific and manual User-Agent values do not
+override this shared environment. When rotation is enabled, an Android device
+preset supplies the model and WebGL vendor/renderer, with selected hardware
+properties and reported screen dimensions. Individual
 values may repeat between generations. A persisted random seed changes small
 canvas readbacks and offline audio measurements consistently.
 

@@ -157,6 +157,8 @@
   "vpnDownload.reason.authentication": "This profile requires authentication before it can continue.",
   "vpnDownload.reason.downloadFailed": "The chapter download failed. The download continues from this chapter next time.",
   "vpnDownload.reason.chapterFailed": "A chapter could not be downloaded. It is listed under Needs attention.",
+  "vpnDownload.reason.siteMoved": "The source site moved to a different address. Update the plugin address before resuming.",
+  "vpnDownload.reason.contentRejected": "The source returned chapter content the plugin rejected, so downloads for this source were paused.",
   "vpnDownload.reason.runtimeError": "The VPN connection stopped with an error.",
   "vpnDownload.reason.off": "VPN downloads are paused. Resume them to continue.",
   "deviceBackup.title": "Device backup",

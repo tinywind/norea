@@ -11,6 +11,8 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.json.JSONObject
@@ -113,6 +115,17 @@ class AndroidBrowserEnvironmentDeviceTest {
           assertTrue(first.getString("ua").contains(checkNotNull(metadata.model)))
           assertEquals("Android", metadata.platform)
           assertEquals(metadata, WebSettingsCompat.getUserAgentMetadata(webtoon.settings))
+          val brandNames = metadata.brandVersionList.map { it.brand }
+          assertTrue(brandNames.contains("Chromium"))
+          assertTrue(brandNames.contains("Google Chrome"))
+          assertTrue(brandNames.any { it != "Chromium" && it != "Google Chrome" && it != "Android WebView" })
+          if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.CUSTOM_REQUEST_HEADERS)
+          ) {
+            val headers = WebViewCompat.getProfile(novel)
+              .getCustomHeaders(REQUESTED_WITH_HEADER, SUPPRESSED_REQUESTED_WITH_VALUE)
+            assertTrue(headers.any { REQUESTED_WITH_ORIGIN_WILDCARD in it.rules })
+          }
         }
         // The same profile reconnect and opening another view preserve identity.
         assertFalse(AndroidBrowserEnvironment.configure(context, true, false, "a".repeat(64)))
@@ -129,6 +142,10 @@ class AndroidBrowserEnvironmentDeviceTest {
         val restored = create("IgnoredSource/5.0")
         onMain {
           assertEquals(android.webkit.WebSettings.getDefaultUserAgent(context), restored.settings.userAgentString)
+          val restoredBrands = WebSettingsCompat.getUserAgentMetadata(restored.settings).brandVersionList.map { it.brand }
+          assertTrue(restoredBrands.contains("Chromium"))
+          assertTrue(restoredBrands.contains("Android WebView"))
+          assertTrue(restoredBrands.any { it != "Chromium" && it != "Google Chrome" && it != "Android WebView" })
         }
       } finally {
         onMain {
