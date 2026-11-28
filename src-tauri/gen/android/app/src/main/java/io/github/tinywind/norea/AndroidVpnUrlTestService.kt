@@ -206,7 +206,12 @@ private class AndroidVpnUrlTestPage(
     startedAt = SystemClock.elapsedRealtime()
     handler.postDelayed(timeout, test.timeoutMs)
     // Revalidate this observation without deleting the shared browser cache.
-    view.loadUrl(test.url, mapOf("Cache-Control" to "no-cache", "Pragma" to "no-cache"))
+    val headers = siteNavigationHeaders(test.url, bypassCache = true)
+    if (headers.isNotEmpty()) {
+      view.loadUrl(test.url, headers)
+    } else {
+      view.loadUrl(test.url)
+    }
   }
 
   fun close() {

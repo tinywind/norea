@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.webkit.WebSettings
 import android.webkit.WebView
+import androidx.webkit.CustomHeader
 import androidx.webkit.ScriptHandler
 import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
@@ -12,6 +13,129 @@ import androidx.webkit.WebViewFeature
 import java.security.SecureRandom
 import java.util.WeakHashMap
 import org.json.JSONObject
+
+internal const val REQUESTED_WITH_HEADER = "X-Requested-With"
+internal const val SUPPRESSED_REQUESTED_WITH_VALUE = ""
+internal const val REQUESTED_WITH_ORIGIN_WILDCARD = "*"
+private const val CHROMIUM_BRAND = "Chromium"
+private const val ANDROID_WEBVIEW_BRAND = "Android WebView"
+private const val GOOGLE_CHROME_BRAND = "Google Chrome"
+private const val FALLBACK_GREASE_BRAND = "Not;A=Brand"
+private const val FALLBACK_GREASE_MAJOR = "99"
+private const val FALLBACK_GREASE_FULL = "99.0.0.0"
+
+internal fun suppressedRequestedWithCustomHeader(): CustomHeader =
+  CustomHeader(
+    REQUESTED_WITH_HEADER,
+    SUPPRESSED_REQUESTED_WITH_VALUE,
+    setOf(REQUESTED_WITH_ORIGIN_WILDCARD),
+  )
+
+/**
+ * Suppresses WebView's automatic package-name X-Requested-With header via
+ * Profile.addCustomHeader (androidx.webkit 1.15+ / WebView 142+, where the
+ * deprecated allowlist API is a no-op). Returning false lets callers rely on
+ * top-level loadUrl headers on older providers.
+ */
+internal fun applyRequestedWithSuppression(
+  isFeatureSupported: (String) -> Boolean,
+  getProfileHeaders: () -> Set<CustomHeader>,
+  addProfileHeader: (CustomHeader) -> Unit,
+): Boolean {
+  if (!isFeatureSupported(WebViewFeature.MULTI_PROFILE) ||
+    !isFeatureSupported(WebViewFeature.CUSTOM_REQUEST_HEADERS)
+  ) {
+    return false
+  }
+  val header = suppressedRequestedWithCustomHeader()
+  val alreadyConfigured = getProfileHeaders().any { existing ->
+    existing.name.equals(header.name, ignoreCase = true) &&
+      existing.value == header.value &&
+      REQUESTED_WITH_ORIGIN_WILDCARD in existing.rules
+  }
+  if (!alreadyConfigured) {
+    addProfileHeader(header)
+  }
+  return true
+}
+
+/**
+ * Headers for top-level HTTP(S) site navigations. Passing an empty
+ * X-Requested-With header also suppresses the package-name default on older
+ * WebView providers without CUSTOM_REQUEST_HEADERS and is deduplicated by
+ * Chromium when the profile header is also active.
+ */
+internal fun siteNavigationHeaders(url: String, bypassCache: Boolean = false): Map<String, String> {
+  if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
+    return emptyMap()
+  }
+  return buildMap {
+    put(REQUESTED_WITH_HEADER, SUPPRESSED_REQUESTED_WITH_VALUE)
+    if (bypassCache) {
+      put("Cache-Control", "no-cache")
+      put("Pragma", "no-cache")
+    }
+  }
+}
+
+/**
+ * Updates the Chromium and browser brand entries while preserving WebView's
+ * version-seeded GREASE brand and brand order when present.
+ */
+internal fun buildUserAgentBrandVersionList(
+  existingBrands: List<UserAgentMetadata.BrandVersion>,
+  version: String,
+  maskAsChrome: Boolean,
+): List<UserAgentMetadata.BrandVersion> {
+  val major = version.substringBefore('.')
+  val browserBrand = if (maskAsChrome) GOOGLE_CHROME_BRAND else ANDROID_WEBVIEW_BRAND
+  val result = mutableListOf<UserAgentMetadata.BrandVersion>()
+  var seenChromium = false
+  var seenBrowserBrand = false
+  var seenGrease = false
+
+  fun versioned(brand: String): UserAgentMetadata.BrandVersion =
+    UserAgentMetadata.BrandVersion.Builder()
+      .setBrand(brand)
+      .setMajorVersion(major)
+      .setFullVersion(version)
+      .build()
+
+  for (entry in existingBrands) {
+    when (entry.brand) {
+      CHROMIUM_BRAND -> if (!seenChromium) {
+        result.add(versioned(CHROMIUM_BRAND))
+        seenChromium = true
+      }
+      ANDROID_WEBVIEW_BRAND, GOOGLE_CHROME_BRAND -> if (!seenBrowserBrand) {
+        result.add(versioned(browserBrand))
+        seenBrowserBrand = true
+      }
+      else -> if (entry.brand.isNotBlank()) {
+        result.add(entry)
+        seenGrease = true
+      }
+    }
+  }
+
+  if (!seenGrease) {
+    result.add(
+      0,
+      UserAgentMetadata.BrandVersion.Builder()
+        .setBrand(FALLBACK_GREASE_BRAND)
+        .setMajorVersion(FALLBACK_GREASE_MAJOR)
+        .setFullVersion(FALLBACK_GREASE_FULL)
+        .build(),
+    )
+  }
+  if (!seenChromium) {
+    result.add(versioned(CHROMIUM_BRAND))
+  }
+  if (!seenBrowserBrand) {
+    result.add(versioned(browserBrand))
+  }
+  return result
+}
 
 /**
  * One persisted environment for every site WebView. The app's own UI WebView
@@ -134,6 +258,12 @@ internal object AndroidBrowserEnvironment {
   @Suppress("UNUSED_PARAMETER")
   fun apply(webView: WebView, userAgent: String?) {
     load(webView.context)
+    val profile by lazy(LazyThreadSafetyMode.NONE) { WebViewCompat.getProfile(webView) }
+    applyRequestedWithSuppression(
+      isFeatureSupported = WebViewFeature::isFeatureSupported,
+      getProfileHeaders = { profile.getCustomHeaders(REQUESTED_WITH_HEADER, SUPPRESSED_REQUESTED_WITH_VALUE) },
+      addProfileHeader = { profile.addCustomHeader(it) },
+    )
     val current = environment
     val defaultUa = WebSettings.getDefaultUserAgent(webView.context)
     val version = Regex("Chrome/([0-9.]+)").find(defaultUa)?.groupValues?.get(1)
@@ -143,7 +273,8 @@ internal object AndroidBrowserEnvironment {
     } else defaultUa
     webView.settings.userAgentString = ua
     if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA) && version != null) {
-      val builder = UserAgentMetadata.Builder(WebSettingsCompat.getUserAgentMetadata(webView.settings))
+      val existingMetadata = WebSettingsCompat.getUserAgentMetadata(webView.settings)
+      val builder = UserAgentMetadata.Builder(existingMetadata)
         .setFullVersion(version)
         .setPlatform("Android")
         .setPlatformVersion(current?.getString("platformVersion") ?: Build.VERSION.RELEASE)
@@ -153,12 +284,13 @@ internal object AndroidBrowserEnvironment {
         .setWow64(false)
         .setMobile(ua.contains("Mobile"))
         .setFormFactors(listOf(if (ua.contains("Mobile")) "Mobile" else "Tablet"))
-      val major = version.substringBefore('.')
-      val brands = if (current == null) listOf("Chromium", "Android WebView") else listOf("Chromium", "Google Chrome")
-      builder.setBrandVersionList(brands.map { brand ->
-        UserAgentMetadata.BrandVersion.Builder().setBrand(brand)
-          .setMajorVersion(major).setFullVersion(version).build()
-      })
+        .setBrandVersionList(
+          buildUserAgentBrandVersionList(
+            existingBrands = existingMetadata.brandVersionList,
+            version = version,
+            maskAsChrome = current != null,
+          ),
+        )
       WebSettingsCompat.setUserAgentMetadata(webView.settings, builder.build())
     }
     scripts.remove(webView)?.remove()
