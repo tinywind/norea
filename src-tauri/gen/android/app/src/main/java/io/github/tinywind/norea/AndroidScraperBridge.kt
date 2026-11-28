@@ -1585,9 +1585,13 @@ class AndroidScraperBridge(
 
   private fun loadScraperUrl(state: AndroidScraperState, webView: WebView, url: String) {
     val sourceId = checkNotNull(state.sourceId)
-    if (isHttpUrl(url) && vpnSession.needsFreshResponse(sourceId, url)) {
+    val bypassCache = isHttpUrl(url) && vpnSession.needsFreshResponse(sourceId, url)
+    if (bypassCache) {
       vpnFreshNavigations[webView] = sourceId to url
-      webView.loadUrl(url, mapOf("Cache-Control" to "no-cache", "Pragma" to "no-cache"))
+    }
+    val headers = siteNavigationHeaders(url, bypassCache = bypassCache)
+    if (headers.isNotEmpty()) {
+      webView.loadUrl(url, headers)
     } else {
       webView.loadUrl(url)
     }
